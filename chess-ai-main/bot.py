@@ -187,34 +187,36 @@ class ChessBot:
         for color in [True, False]:
             pawns = list(board.pieces(chess.PAWN, color))
             mult = 1 if color else -1
+            color_name = "White" if color else "Black"
             score = 0
 
-            #Pawn files
+
+            # Pawn files for isolated/doubled
             pawn_files = set(chess.square_file(p) for p in pawns)
 
-            #Isolated pawns penalty
-            for pawn in pawns:
-                file = chess.square_file(pawn)
-
-                adjacent_files = [file - 1, file + 1]
-                if not any(adj_file in pawn_files for adj_file in adjacent_files if 0 <= adj_file < 8):
-                    score -= 15
-
-            #Doubled pawns penalty
             file_counts = {}
             for pawn in pawns:
                 file = chess.square_file(pawn)
                 file_counts[file] = file_counts.get(file, 0) + 1
 
-            for count in file_counts.values():
-                if count > 1:
-                    score -= 15 * (count - 1)
-
-            #Passed pawn bonus
             for pawn in pawns:
+                square_name = chess.square_name(pawn)
                 rank = chess.square_rank(pawn)
                 file = chess.square_file(pawn)
+                pawn_score = 0
 
+                # Isolated
+                adjacent_files = [file - 1, file + 1]
+                if not any(adj_file in pawn_files for adj_file in adjacent_files if 0 <= adj_file < 8):
+                    pawn_score -= 15
+
+                # Doubled
+                count_on_file = file_counts[file]
+                if count_on_file > 1:
+                    penalty = 15 * (count_on_file - 1)
+                    pawn_score -= penalty
+
+                # Passed
                 is_passed = True
                 direction = 1 if color else -1
 
@@ -230,26 +232,28 @@ class ChessBot:
                             break
 
                 if is_passed:
-                    promotion_bonus = 20 + abs(rank - (0 if color else 7)) * 5
-                    score += promotion_bonus
+                    passed_bonus = 20 + (rank if color else 7 - rank) * 10
+                    pawn_score += passed_bonus
 
-                    #Connected passed pawn bonus
+                    # Connected passed
                     for other in pawns:
                         if other == pawn:
                             continue
                         other_file = chess.square_file(other)
                         other_rank = chess.square_rank(other)
                         if abs(other_file - file) == 1 and abs(other_rank - rank) <= 1:
-                            score += 20
+                            pawn_score += 20
                             break
+
+                score += pawn_score
 
             if color:
                 white_score += score
             else:
                 black_score += score
 
-        return white_score - black_score
-
+        total = white_score - black_score
+        return total
 
     def evaluate_king_safety(self, board):
         score = 0
@@ -275,7 +279,6 @@ class ChessBot:
                     if piece and piece.piece_type == chess.PAWN and piece.color == color:
                         shield_score += 10
 
-                # Check open file penalty
                 has_friendly_pawn = any(
                     board.piece_at(chess.square(file, r)) == chess.Piece(chess.PAWN, color)
                     for r in range(8)
@@ -283,18 +286,22 @@ class ChessBot:
                 if not has_friendly_pawn:
                     open_file_penalty += 20
 
-            shield_score = min(shield_score, 30)
-            score += (shield_score - open_file_penalty) * multiplier
+            capped_shield = min(shield_score, 30)
+            partial = capped_shield - open_file_penalty
+            score += partial * multiplier
 
-            # Tropism: enemy piece proximity to king
+            #Tropism
+            tropism_penalty = 0
             for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
                 for sq in board.pieces(piece_type, enemy_color):
                     dist = chess.square_distance(king_square, sq)
                     if dist <= 3:
-                        score -= (10 - 2 * dist) * multiplier
+                        penalty = (10 - 2 * dist)
+                        tropism_penalty += penalty
+
+            score -= tropism_penalty * multiplier
 
         return score
-
 
     def evaluate_position(self, board):
 
@@ -335,33 +342,44 @@ class ChessBot:
             chess.QUEEN: 1
         }
 
+        total_score = 0
+
         for color in [True, False]:
-            score = 0
             mult = 1 if color else -1
-            mobility = 0
+            score = 0
 
             for piece_type, weight in weights.items():
+                piece_mobility = 0
+
                 for square in board.pieces(piece_type, color):
-                    legal_moves = [move for move in board.legal_moves if move.from_square == square]
-                    mobility += weight * len(legal_moves)
+                    moves = [
+                        move for move in board.legal_moves if move.from_square == square
+                    ]
+                    count = len(moves)
+                    weighted = count * weight
+                    piece_mobility += weighted
 
-            score += mobility * mult
+                score += piece_mobility
 
-        return score
+            total_score += score * mult
+
+        return total_score
 
     def evaluate_key_square_control(self, board):
-        key_squares = [
-            chess.E4, chess.D4, chess.E5, chess.D5
-        ]
-
+        key_squares = [chess.E4, chess.D4, chess.E5, chess.D5]
         score = 0
 
         for square in key_squares:
             white_attackers = board.attackers(chess.WHITE, square)
             black_attackers = board.attackers(chess.BLACK, square)
 
-            score += 5 * len(white_attackers)
-            score -= 5 * len(black_attackers)
+            w_count = len(white_attackers)
+            b_count = len(black_attackers)
+
+            square_name = chess.square_name(square)
+
+            score += 5 * w_count
+            score -= 5 * b_count
 
         return score
 

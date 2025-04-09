@@ -407,7 +407,7 @@ class ChessBot:
             print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
             return polyglot_move
 
-        self.manage_transposition_table()
+        self.transposition_table = {}
         self.killer_moves = {}
 
         best_move = None
@@ -565,11 +565,12 @@ class ChessBot:
         if alpha < stand_pat:
             alpha = stand_pat
 
-        # Only consider captures and checks
+        # Only consider captures
         for move in self.order_moves(board, quiescence=True):
             if not board.is_capture(move):
                 continue
 
+            # Delta pruning - skip likely bad captures
             if not self.is_likely_good_capture(board, move):
                 continue
 
@@ -664,15 +665,12 @@ class ChessBot:
 
         # Internal Iterative Deepening
         if depth >= 4 and best_move is None:
-            # Do a shallower search to get a good first move
             _, iid_move = self.pvs(board, depth // 2, alpha, beta, maximizing_player, ply)
             if iid_move:
-                # Ensure this move gets searched first-
                 self.transposition_table[board_hash] = (0, 0, iid_move, 0)
 
-        # Try null move pruning in non-zugzwang positions
+        # Null move pruning
         if depth >= 3 and not board.is_check() and not self.is_endgame(board):
-            # Adaptive null move reduction
             R = 3 + depth // 6
 
             board.push(chess.Move.null())
@@ -680,34 +678,31 @@ class ChessBot:
             score = -score
             board.pop()
 
-            if score >= beta:  # Fail-high
-                return beta, None  # Null-move cutoff
+            if score >= beta:
+                return beta, None
 
         # Futility pruning
         if depth <= 2 and not board.is_check():
             static_eval = self.evaluate_position(board)
-            futility_margin = 100 * depth  # Adjust based on piece values
-
+            futility_margin = 100 * depth
             if maximizing_player and static_eval + futility_margin <= alpha:
                 return static_eval, None
             elif not maximizing_player and static_eval - futility_margin >= beta:
                 return static_eval, None
 
-        # Get ordered moves
         moves = self.order_moves(board)
         if not moves:
             return self.evaluate_position(board), None
 
         best_score = float('-inf') if maximizing_player else float('inf')
 
-        # First move gets full window
+        # First move (full window search)
         first_move = moves[0]
         board.push(first_move)
 
         if maximizing_player:
             score, _ = self.pvs(board, depth - 1, -beta, -alpha, False, ply + 1)
             score = -score
-
             board.pop()
 
             if score > best_score:
@@ -721,13 +716,17 @@ class ChessBot:
                 self.update_killer_move(first_move, ply)
                 self.update_history_heuristic(board, first_move, depth)
 
-                # Store in transposition table
+                # --- FIX: Update counter move here ---
+                if len(board.move_stack) > 0:
+                    prev_move = board.move_stack[-1]
+                    counter_key = (prev_move.from_square, prev_move.to_square)
+                    self.counter_moves[counter_key] = first_move
+
                 self.transposition_table[board_hash] = (depth, best_score, best_move, 2)  # Lower bound
                 return best_score, best_move
         else:
             score, _ = self.pvs(board, depth - 1, -beta, -alpha, True, ply + 1)
             score = -score
-
             board.pop()
 
             if score < best_score:
@@ -741,7 +740,12 @@ class ChessBot:
                 self.update_killer_move(first_move, ply)
                 self.update_history_heuristic(board, first_move, depth)
 
-                # Store in transposition table
+                # --- FIX: Update counter move here ---
+                if len(board.move_stack) > 0:
+                    prev_move = board.move_stack[-1]
+                    counter_key = (prev_move.from_square, prev_move.to_square)
+                    self.counter_moves[counter_key] = first_move
+
                 self.transposition_table[board_hash] = (depth, best_score, best_move, 1)  # Upper bound
                 return best_score, best_move
 
@@ -749,23 +753,17 @@ class ChessBot:
         for i, move in enumerate(moves[1:], 1):
             board.push(move)
 
-            # Late Move Reduction
             do_full_search = True
             if i >= 4 and depth >= 3 and not board.is_check() and not board.is_capture(move) and move.promotion is None:
-                # Reduce search depth for late quiet moves
                 R = 1 + depth // 3 + min(i // 6, 3)
                 score, _ = self.pvs(board, depth - 1 - R, -alpha - 1, -alpha, not maximizing_player, ply + 1)
                 score = -score
                 do_full_search = (score > alpha)
-            else:
-                do_full_search = True
 
-            # PVS with null window first
             if do_full_search:
                 score, _ = self.pvs(board, depth - 1, -alpha - 1, -alpha, not maximizing_player, ply + 1)
                 score = -score
 
-                # If we get a score between alpha and beta, do a full re-search
                 if alpha < score < beta:
                     score, _ = self.pvs(board, depth - 1, -beta, -alpha, not maximizing_player, ply + 1)
                     score = -score
@@ -784,9 +782,9 @@ class ChessBot:
                     self.update_killer_move(move, ply)
                     self.update_history_heuristic(board, move, depth)
 
-                    # Update counter moves table
+                    # --- FIX: Update counter move here ---
                     if len(board.move_stack) > 0:
-                        prev_move = board.move_stack[-2]
+                        prev_move = board.move_stack[-1]
                         counter_key = (prev_move.from_square, prev_move.to_square)
                         self.counter_moves[counter_key] = move
 
@@ -803,9 +801,8 @@ class ChessBot:
                     self.update_killer_move(move, ply)
                     self.update_history_heuristic(board, move, depth)
 
-                    # Update counter moves table
                     if len(board.move_stack) > 0:
-                        prev_move = board.move_stack[-2]
+                        prev_move = board.move_stack[-1]
                         counter_key = (prev_move.from_square, prev_move.to_square)
                         self.counter_moves[counter_key] = move
 

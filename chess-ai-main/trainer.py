@@ -2,6 +2,40 @@ from board import ChessBoard
 import time, random, json, copy
 import chess
 from bot import ChessBot
+import json
+
+def save_bot_to_json(bot, filename):
+    data = {
+        "piece_values": {piece_type.name: value for piece_type, value in bot.piece_values.items()},
+        "position_scores": {piece_type.name: table for piece_type, table in bot.position_scores.items()},
+        "king_shield_bonus": getattr(bot, 'king_shield_bonus', None),
+        "open_file_penalty": getattr(bot, 'open_file_penalty', None),
+        "attack_weights": getattr(bot, 'attack_weights', None),
+        "mobility_weights": getattr(bot, 'mobility_weights', None)
+    }
+    with open(filename, 'w') as f:
+        json.dump(data, f, indent=4)
+
+def load_bot_from_json(bot, filename):
+    with open(filename, 'r') as f:
+        data = json.load(f)
+
+    reverse_piece_map = {name: getattr(chess, name) for name in data['piece_values']}
+
+    for name, value in data['piece_values'].items():
+        bot.piece_values[reverse_piece_map[name]] = value
+
+    for name, table in data['position_scores'].items():
+        bot.position_scores[reverse_piece_map[name]] = table
+
+    if 'king_shield_bonus' in data:
+        bot.king_shield_bonus = data['king_shield_bonus']
+    if 'open_file_penalty' in data:
+        bot.open_file_penalty = data['open_file_penalty']
+    if 'attack_weights' in data:
+        bot.attack_weights = data['attack_weights']
+    if 'mobility_weights' in data:
+        bot.mobility_weights = data['mobility_weights']
 
 class SelfPlayTrainer:
     def __init__(self, bot_constructor, games_per_iteration=10, iterations=3):
@@ -9,6 +43,14 @@ class SelfPlayTrainer:
         self.games_per_iteration = games_per_iteration
         self.iterations = iterations
         self.best_bot = bot_constructor()
+        self.performance_history = []
+
+        try:
+            load_bot_from_json(self.best_bot, "best_bot.json")
+            print("Loaded existing best_bot.json!")
+        except FileNotFoundError:
+            print("No existing best_bot.json found, starting fresh.")
+
         self.performance_history = []
 
     def train(self):
@@ -24,6 +66,9 @@ class SelfPlayTrainer:
                 "timestamp": time.time(),
                 "metrics": analysis
             })
+
+        save_bot_to_json(self.best_bot, "best_bot.json")
+        print("Best bot saved to best_bot.json!")
         return self.best_bot
 
     def create_challenger(self):

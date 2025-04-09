@@ -183,11 +183,20 @@ class ChessBot:
 
     def evaluate_material(self, board):
         score = 0
+        phase = get_game_phase(board)
 
-        # Basic material count
+        # Dynamic pawn value - increases as game progresses toward endgame
+        pawn_value = self.piece_values[chess.PAWN]
+        if phase < 128:  # Endgame territory
+            pawn_value = self.piece_values[chess.PAWN] + (256 - phase) // 4
+
         for piece in self.piece_values:
-            score += len(board.pieces(piece, True)) * self.piece_values[piece]
-            score -= len(board.pieces(piece, False)) * self.piece_values[piece]
+            if piece == chess.PAWN:
+                score += len(board.pieces(piece, True)) * pawn_value
+                score -= len(board.pieces(piece, False)) * pawn_value
+            else:
+                score += len(board.pieces(piece, True)) * self.piece_values[piece]
+                score -= len(board.pieces(piece, False)) * self.piece_values[piece]
 
         # Bishop pair bonus
         if len(board.pieces(chess.BISHOP, True)) >= 2:
@@ -223,6 +232,10 @@ class ChessBot:
                 rank = chess.square_rank(pawn)
                 file = chess.square_file(pawn)
                 pawn_score = 0
+
+                # Advancement bonus
+                advancement = rank if color else 7 - rank
+                pawn_score += advancement * 5  # Progressive bonus
 
                 # Isolated
                 adjacent_files = [file - 1, file + 1]
@@ -341,13 +354,32 @@ class ChessBot:
         material = self.evaluate_material(board)
         position = self.evaluate_piece_position(board)
 
-        if abs(material) < 500 or phase > 128:
+        if phase < 64:
+            # Opening / Early Middlegame
+            pawn_structure = 0
+            king_safety = self.evaluate_king_safety(board)
+            mobility = self.evaluate_mobility(board)
+            key_squares = self.evaluate_key_square_control(board)
+            attack_score = self.evaluate_attacks(board)
+            coordination = self.evaluate_piece_coordination(board)
+
+        elif phase < 128:
+            # Middlegame / Early Endgame
             pawn_structure = self.evaluate_pawn_structure(board)
             king_safety = self.evaluate_king_safety(board)
             mobility = self.evaluate_mobility(board)
             key_squares = self.evaluate_key_square_control(board)
+            attack_score = self.evaluate_attacks(board)
+            coordination = self.evaluate_piece_coordination(board)
+
         else:
-            pawn_structure = king_safety = mobility = key_squares = 0
+            # True Endgame
+            pawn_structure = self.evaluate_pawn_structure(board)
+            king_safety = 0  # King activity matters more than "safety" now
+            mobility = self.evaluate_mobility(board)
+            key_squares = self.evaluate_key_square_control(board)
+            attack_score = 0  # Attacks don't matter much when few pieces left
+            coordination = self.evaluate_piece_coordination(board)
 
         score = (
                 material +
@@ -355,7 +387,9 @@ class ChessBot:
                 pawn_structure +
                 king_safety +
                 mobility +
-                key_squares
+                key_squares +
+                attack_score +
+                coordination
         )
 
         # Thread-safe update of eval cache
@@ -365,10 +399,10 @@ class ChessBot:
 
     def evaluate_mobility(self, board):
         weights = {
-            chess.KNIGHT: 4,
-            chess.BISHOP: 4,
-            chess.ROOK: 2,
-            chess.QUEEN: 1
+            chess.KNIGHT: 5,
+            chess.BISHOP: 5,
+            chess.ROOK: 3,
+            chess.QUEEN: 2
         }
 
         total_score = 0
@@ -390,6 +424,85 @@ class ChessBot:
             total_score += score * mult
 
         return total_score
+
+    def evaluate_attacks(self, board):
+        score = 0
+
+        for color in [True, False]:
+            mult = 1 if color else -1
+            enemy_color = not color
+            enemy_king_square = board.king(enemy_color)
+            if enemy_king_square is None:
+                continue
+
+            attack_score = 0
+
+            # Count attackers and their weight
+            for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+                attack_weight = {
+                    chess.KNIGHT: 10,
+                    chess.BISHOP: 10,
+                    chess.ROOK: 15,
+                    chess.QUEEN: 20
+                }
+
+                for square in board.pieces(piece_type, color):
+                    # Check if this piece is attacking the king's vicinity
+                    king_vicinity = [
+                        s for s in chess.SQUARES
+                        if chess.square_distance(s, enemy_king_square) <= 2
+                    ]
+
+                    for vicinity_square in king_vicinity:
+                        if board.is_attacked_by(color, vicinity_square):
+                            attack_score += attack_weight[piece_type]
+                            break
+
+            # Check if king is in check
+            temp_board = board.copy()
+            temp_board.turn = color
+            if temp_board.is_check():
+                attack_score += 50
+
+            score += attack_score * mult
+
+        return score
+
+    def evaluate_piece_coordination(self, board):
+        score = 0
+
+        for color in [True, False]:
+            mult = 1 if color else -1
+            coordination_score = 0
+
+            # Knights supporting each other
+            knight_squares = list(board.pieces(chess.KNIGHT, color))
+            for i, sq1 in enumerate(knight_squares):
+                for sq2 in knight_squares[i + 1:]:
+                    if chess.square_distance(sq1, sq2) <= 2:
+                        coordination_score += 5
+
+            # Bishops on same diagonal or adjacent diagonals
+            bishop_squares = list(board.pieces(chess.BISHOP, color))
+            for i, sq1 in enumerate(bishop_squares):
+                for sq2 in bishop_squares[i + 1:]:
+                    if (chess.square_rank(sq1) + chess.square_file(sq1) ==
+                            chess.square_rank(sq2) + chess.square_file(sq2) or
+                            chess.square_rank(sq1) - chess.square_file(sq1) ==
+                            chess.square_rank(sq2) - chess.square_file(sq2)):
+                        coordination_score += 10
+
+            # Rooks on same file or rank
+            rook_squares = list(board.pieces(chess.ROOK, color))
+            for i, sq1 in enumerate(rook_squares):
+                for sq2 in rook_squares[i + 1:]:
+                    if (chess.square_file(sq1) == chess.square_file(sq2) or
+                            chess.square_rank(sq1) == chess.square_rank(sq2)):
+                        coordination_score += 15
+
+            score += coordination_score * mult
+
+        return score
 
     def evaluate_key_square_control(self, board):
         key_squares = [chess.E4, chess.D4, chess.E5, chess.D5]
@@ -415,6 +528,11 @@ class ChessBot:
 
         if isinstance(board, ChessBoard):
             board = board.get_board_state()
+
+        mate_move = self.check_for_immediate_mate(board)
+        if mate_move:
+            print("Found mate in 1!")
+            return mate_move
 
         # Try book moves first
         book_move = self.opening_book.get_move(board)
@@ -720,19 +838,23 @@ class ChessBot:
                 get_game_phase(board) < 100)
 
     def manage_transposition_table(self):
-        """Thread-safe management of the transposition table size"""
         with self.transposition_table_lock:
             if len(self.transposition_table) > self.transposition_table_max_size:
-                # Sort entries by depth (preserve deeper searches)
-                entries = [(key, value[0]) for key, value in self.transposition_table.items()]
-                entries.sort(key=lambda x: x[1])  # Sort by depth
+                # Sort entries by a combination of depth and age
+                entries = [(key, value[0], self.entry_age.get(key, 0))
+                           for key, value in self.transposition_table.items()]
 
-                # Remove 25% of shallowest depth entries
+                # Sort by combined score (depth * 10 - age)
+                entries.sort(key=lambda x: x[1] * 10 - x[2])
+
+                # Remove 25% of least valuable entries
                 num_to_remove = len(entries) // 4
-                keys_to_remove = [key for key, _ in entries[:num_to_remove]]
+                keys_to_remove = [key for key, _, _ in entries[:num_to_remove]]
 
                 for key in keys_to_remove:
                     del self.transposition_table[key]
+                    if key in self.entry_age:
+                        del self.entry_age[key]
 
     def pvs(self, board, depth, alpha, beta, color, ply=0):
         """Principal Variation Search (PVS) with alpha-beta pruning."""
@@ -808,3 +930,89 @@ class ChessBot:
         self.transposition_table[board_hash] = (depth, alpha * color, best_move, entry_type)
 
         return alpha, best_move
+
+    def check_for_immediate_mate(self, board):
+        """Check if there's a mate in 1 move"""
+        for move in board.legal_moves:
+            board.push(move)
+            is_mate = board.is_checkmate()
+            board.pop()
+            if is_mate:
+                return move
+        return None
+
+    def check_for_blunders(self, board, candidate_move, depth=2):
+        """
+        Check if a candidate move is a blunder by examining if it:
+        1. Hangs a piece (can be captured without compensation)
+        2. Walks into a fork or pin
+        3. Misses a simple tactic
+
+        Returns:
+        - True if the move is likely a blunder
+        - False if the move seems safe
+        """
+        if not candidate_move or not board.is_legal(candidate_move):
+            return True  # Invalid move is considered a blunder
+
+        original_board = board.copy()
+        board = board.copy()  # Work with a copy to avoid modifying the original
+
+        # Execute the candidate move
+        board.push(candidate_move)
+
+        # 1. Check if we just hung a piece (SEE - Static Exchange Evaluation)
+        piece_moved = original_board.piece_at(candidate_move.from_square)
+        to_square = candidate_move.to_square
+
+        if piece_moved and board.is_attacked_by(not board.turn, to_square):
+            # Our piece can be captured - check if it's adequately defended
+            attacker_value = float('inf')
+            for attacker_square in board.attackers(not board.turn, to_square):
+                attacker = board.piece_at(attacker_square)
+                if attacker:
+                    attacker_value = min(attacker_value, self.get_piece_value(attacker))
+
+            # Check if we can recapture
+            can_recapture = False
+            recapture_value = 0
+            for defender_square in board.attackers(board.turn, to_square):
+                defender = board.piece_at(defender_square)
+                if defender:
+                    can_recapture = True
+                    recapture_value = max(recapture_value, self.get_piece_value(defender))
+
+            # If we can't recapture or losing significant material, likely a blunder
+            piece_value = self.get_piece_value(piece_moved)
+            if not can_recapture and piece_value > 100:  # Allow pawn sacrifice
+                return True
+            if can_recapture and (piece_value - attacker_value + recapture_value) < -200:
+                # Net material loss after exchange
+                return True
+
+        # 2. Check if our king is in check and we don't have good responses
+        if board.is_check():
+            legal_moves = list(board.legal_moves)
+            if not legal_moves:  # Checkmate
+                return True
+            if len(legal_moves) == 1:  # Forced move, but not necessarily bad
+                # Check if the forced move loses material
+                check_board = board.copy()
+                check_board.push(legal_moves[0])
+                if self.evaluate_material(check_board) < self.evaluate_material(original_board) - 200:
+                    return True
+
+        # 3. Do a shallow search to see if the position after our move is significantly worse
+        current_eval = self.evaluate_position(original_board)
+
+        # Use negamax/PVS with reduced depth to check tactical sequences
+        # We're looking for significant immediate drops in evaluation
+        next_color = 1 if board.turn else -1
+        tactical_score, _ = self.pvs(board, depth, float('-inf'), float('inf'), next_color, 0)
+        tactical_score = tactical_score * -1  # Because we're now viewing from opponent's perspective
+
+        # Compare evaluations: if there's a significant drop, it might be a blunder
+        eval_drop = current_eval - tactical_score
+
+        # Threshold based on piece values - loss of knight or more is significant
+        return eval_drop > 300  # Consider bishop/knight value as threshold for blunder

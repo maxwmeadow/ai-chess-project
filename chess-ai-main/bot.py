@@ -1,11 +1,7 @@
-import os
-
 import chess
 from chess.svg import piece
 import chess.polyglot
 import time
-import concurrent.futures
-import threading
 
 from board import ChessBoard
 from opening_book import OpeningBook, PolyglotBook, create_simple_opening_book
@@ -38,18 +34,12 @@ class ChessBot:
         self.polyglot_book = PolyglotBook("books/gm2600.bin")
 
         self.transposition_table = {}
-        self.transposition_table_lock = threading.Lock()  # Add a lock for thread safety
         self.transposition_table_max_size = 1000000
         self.eval_cache = {}
-        self.eval_cache_lock = threading.Lock()  # Add a lock for the eval cache
 
         self.killer_moves = {}
-        self.killer_moves_lock = threading.Lock()  # Add a lock for killer moves
         self.counter_moves = {}
-        self.counter_moves_lock = threading.Lock()  # Add a lock for counter moves
-
         self.history_table = {}
-        self.history_table_lock = threading.Lock()  # Add a lock for history table
 
         # Rest of the initialization remains the same
         self.piece_values = {
@@ -146,12 +136,6 @@ class ChessBot:
             chess.QUEEN: self.queen_table,
             chess.KING: self.king_table_mg
         }
-
-        # Set the number of threads (can be adjusted based on the hardware)
-        self.num_threads = max(1, (os.cpu_count() or 4) - 1)
-        print(f"Initializing chess bot with {self.num_threads} worker threads")
-
-    # The evaluation functions remain the same, but we need to add thread safety to cache access
 
     def evaluate_piece_position(self, board):
         score_mg = 0
@@ -338,11 +322,8 @@ class ChessBot:
     def evaluate_position(self, board):
         # Check position cache
         board_hash = chess.polyglot.zobrist_hash(board)
-
-        # Thread-safe check of eval cache
-        with self.eval_cache_lock:
-            if board_hash in self.eval_cache:
-                return self.eval_cache[board_hash]
+        if board_hash in self.eval_cache:
+            return self.eval_cache[board_hash]
 
         if board.is_game_over():
             if board.is_checkmate():
@@ -392,9 +373,8 @@ class ChessBot:
                 coordination
         )
 
-        # Thread-safe update of eval cache
-        with self.eval_cache_lock:
-            self.eval_cache[board_hash] = score
+
+        self.eval_cache[board_hash] = score
         return score
 
     def evaluate_mobility(self, board):
@@ -557,22 +537,12 @@ class ChessBot:
             if time.time() - start_time > time_for_move:
                 break
 
-            # For depth 1-3, use single-threaded search for better efficiency
-            if depth <= 2:
-                score, move = self.pvs(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
+            score, move = self.minimax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
 
-                if move:
-                    best_move = move
-                    elapsed = time.time() - start_time
-                    print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {score}")
-            else:
-                # Use multithreaded search for deeper depths
-                score, move = self.parallel_search(board, depth, time_for_move - (time.time() - start_time))
-
-                if move:
-                    best_move = move
-                    elapsed = time.time() - start_time
-                    print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {score} (parallel)")
+            if move:
+                best_move = move
+                elapsed = time.time() - start_time
+                print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {score}")
 
             # Early exit conditions
             if abs(score) > 9000 and depth > 3:  # Mate found
@@ -586,55 +556,6 @@ class ChessBot:
 
         return best_move
 
-    def parallel_search(self, board, depth, remaining_time):
-        """Parallel search using thread pool for top-level moves"""
-        # First order the moves to ensure best candidates are searched first
-        moves = self.order_moves(board)
-
-        # Handle edge cases
-        if not moves:
-            return 0, None
-        if len(moves) == 1:
-            return self.pvs(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
-
-        best_score = float('-inf')
-        best_move = moves[0]  # Default to first move
-        color = 1 if board.turn else -1
-        alpha = float('-inf')
-        beta = float('inf')
-
-        # Create a copy of the board for each thread
-        def search_move(move):
-            # We need a copy of the board for thread safety
-            board_copy = board.copy()
-            board_copy.push(move)
-            # Negate the score since we're alternating players
-            score, _ = self.pvs(board_copy, depth - 1, -beta, -alpha, -color, 1)
-            score = -score
-            return score, move
-
-        # Use ThreadPoolExecutor to parallelize the search
-        with concurrent.futures.ThreadPoolExecutor(max_workers=self.num_threads) as executor:
-            # Start evaluating all moves in parallel
-            future_to_move = {executor.submit(search_move, move): move for move in moves}
-
-            # Process results as they complete
-            for future in concurrent.futures.as_completed(future_to_move):
-                move = future_to_move[future]
-                try:
-                    score, _ = future.result()
-
-                    if score > best_score:
-                        best_score = score
-                        best_move = move
-
-                    # Update alpha for future searches
-                    alpha = max(alpha, score)
-
-                except Exception as exc:
-                    print(f'Move {move} generated an exception: {exc}')
-
-        return best_score, best_move
 
     def order_moves(self, board, quiescence=False):
         """Order moves for better alpha-beta pruning efficiency"""
@@ -642,30 +563,24 @@ class ChessBot:
         scored_moves = []
 
         ply = len(board.move_stack)
-
-        # Thread-safe access to killer moves
-        with self.killer_moves_lock:
-            killer_move = self.killer_moves.get(ply)
-
+        killer_move = self.killer_moves.get(ply)
         previous_move = board.move_stack[-1] if board.move_stack else None
         counter_move = None
 
         # Get counter move if available
         if previous_move:
-            with self.counter_moves_lock:
-                counter_key = (previous_move.from_square, previous_move.to_square)
-                counter_move = self.counter_moves.get(counter_key)
+            counter_key = (previous_move.from_square, previous_move.to_square)
+            counter_move = self.counter_moves.get(counter_key)
 
         for move in moves:
             score = 0
 
             # PV move from transposition table gets highest priority
             board_hash = chess.polyglot.zobrist_hash(board)
-            with self.transposition_table_lock:
-                if board_hash in self.transposition_table:
-                    _, _, hash_move, _ = self.transposition_table[board_hash]
-                    if hash_move == move:
-                        score += 10000
+            if board_hash in self.transposition_table:
+                _, _, hash_move, _ = self.transposition_table[board_hash]
+                if hash_move == move:
+                    score += 10000
 
             # Counter move bonus
             if counter_move == move:
@@ -687,9 +602,8 @@ class ChessBot:
                 score += 9000
 
             # History heuristic
-            with self.history_table_lock:
-                if (board.turn, move.from_square, move.to_square) in self.history_table:
-                    score += self.history_table[(board.turn, move.from_square, move.to_square)]
+            if (board.turn, move.from_square, move.to_square) in self.history_table:
+                score += self.history_table[(board.turn, move.from_square, move.to_square)]
 
             # Prioritize captures by MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
             if board.is_capture(move):
@@ -790,14 +704,12 @@ class ChessBot:
 
     def update_history_heuristic(self, board, move, depth):
         """Update history table for successful moves"""
-        with self.history_table_lock:
-            self.history_table[(board.turn, move.from_square, move.to_square)] = \
-                self.history_table.get((board.turn, move.from_square, move.to_square), 0) + depth * depth
+        self.history_table[(board.turn, move.from_square, move.to_square)] = \
+            self.history_table.get((board.turn, move.from_square, move.to_square), 0) + depth * depth
 
     def update_killer_move(self, move, ply):
         """Update killer move table"""
-        with self.killer_moves_lock:
-            self.killer_moves[ply] = move
+        self.killer_moves[ply] = move
 
     def is_likely_good_capture(self, board, move):
         """Static Exchange Evaluation (SEE) approximation - determines if a capture is likely good"""
@@ -838,23 +750,15 @@ class ChessBot:
                 get_game_phase(board) < 100)
 
     def manage_transposition_table(self):
-        with self.transposition_table_lock:
-            if len(self.transposition_table) > self.transposition_table_max_size:
-                # Sort entries by a combination of depth and age
-                entries = [(key, value[0], self.entry_age.get(key, 0))
-                           for key, value in self.transposition_table.items()]
+        if len(self.transposition_table) > self.transposition_table_max_size:
+            # Sort entries by depth (preserve deeper searches)
+            entries = [(key, value[0]) for key, value in self.transposition_table.items()]
+            entries.sort(key=lambda x: x[1])  # Sort by depth
 
-                # Sort by combined score (depth * 10 - age)
-                entries.sort(key=lambda x: x[1] * 10 - x[2])
-
-                # Remove 25% of least valuable entries
-                num_to_remove = len(entries) // 4
-                keys_to_remove = [key for key, _, _ in entries[:num_to_remove]]
-
-                for key in keys_to_remove:
-                    del self.transposition_table[key]
-                    if key in self.entry_age:
-                        del self.entry_age[key]
+            # Remove 25% of shallowest depth entries
+            keys_to_remove = [entry[0] for entry in entries[:len(entries) // 4]]
+            for key in keys_to_remove:
+                del self.transposition_table[key]
 
     def pvs(self, board, depth, alpha, beta, color, ply=0):
         """Principal Variation Search (PVS) with alpha-beta pruning."""
@@ -873,18 +777,6 @@ class ChessBot:
 
         if depth == 0:
             return self.quiescence(board, alpha, beta, color), None
-
-        NULL_MOVE_REDUCTION = 2  # How much to reduce depth when doing null move
-        if depth >= 3 and not board.is_check():
-            # Make a null move (skip turn)
-            board.push(chess.Move.null())
-            null_score, _ = self.pvs(board, depth - 1 - NULL_MOVE_REDUCTION, -beta, -beta + 1, -color, ply + 1)
-            null_score = -null_score
-            board.pop()
-
-            if null_score >= beta:
-                # Null move cutoff
-                return beta, None
 
         best_move = None
         moves = self.order_moves(board)

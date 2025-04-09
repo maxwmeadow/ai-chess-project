@@ -778,30 +778,74 @@ class ChessBot:
         if depth == 0:
             return self.quiescence(board, alpha, beta, color), None
 
+        # Null move pruning with more conditions
+        if depth >= 3 and not board.is_check() and not self.is_endgame(board):
+            # Don't do null move if we have only major pieces left
+            if (len(board.pieces(chess.QUEEN, board.turn)) +
+                    len(board.pieces(chess.ROOK, board.turn)) > 0):
+
+                null_move = chess.Move.null()
+                board.push(null_move)
+
+                # Dynamic reduction based on depth
+                R = 2
+                if depth > 6: R = 3
+
+                null_score, _ = self.pvs(board, depth - 1 - R, -beta, -beta + 1, -color, ply + 1)
+                null_score = -null_score
+
+                board.pop()
+
+                if null_score >= beta:
+                    # Verification search with reduced depth
+                    verify_depth = depth - R
+                    if verify_depth > 0:
+                        verify_score, _ = self.pvs(board, verify_depth, beta - 1, beta, color, ply)
+                        if verify_score >= beta:
+                            return beta, None
+                    else:
+                        return beta, None
+
         best_move = None
         moves = self.order_moves(board)
 
         first_move = True
         original_alpha = alpha
 
-        for move in moves:
+        for move_idx, move in enumerate(moves):
             board.push(move)
 
-            if first_move:
-                score, _ = self.pvs(board, depth - 1, -beta, -alpha, -color, ply + 1)
+            reduction = 0
+
+            if not first_move and depth >= 3 and move_idx >= 3 and not board.is_check():
+                # Only reduce bad-looking moves after a few good ones
+                reduction = 1
+
+            new_depth = depth - 1 - reduction
+
+            if first_move or reduction == 0:
+                score, _ = self.pvs(board, new_depth, -beta, -alpha, -color, ply + 1)
                 score = -score
                 first_move = False
             else:
-                # Null window search
-                score, _ = self.pvs(board, depth - 1, -alpha - 1, -alpha, -color, ply + 1)
+                # Reduced-depth null window search first
+                score, _ = self.pvs(board, new_depth, -alpha - 1, -alpha, -color, ply + 1)
                 score = -score
 
-                # If score improved alpha, do full re-search
+                # If score improved alpha, full re-search at normal depth
                 if alpha < score < beta:
                     score, _ = self.pvs(board, depth - 1, -beta, -score, -color, ply + 1)
                     score = -score
 
             board.pop()
+
+            if score > alpha:
+                alpha = score
+                best_move = move
+
+            if alpha >= beta:
+                self.update_killer_move(move, ply)
+                break
 
             if score > alpha:
                 alpha = score

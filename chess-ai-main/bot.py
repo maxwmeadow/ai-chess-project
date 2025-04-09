@@ -1,6 +1,7 @@
 import chess
 from chess.svg import piece
 import chess.polyglot
+import time
 
 from board import ChessBoard
 from opening_book import OpeningBook, PolyglotBook, create_simple_opening_book
@@ -28,6 +29,15 @@ class ChessBot:
 
         self.opening_book = OpeningBook(create_simple_opening_book(), max_book_depth = 8)
         self.polyglot_book = PolyglotBook("books/gm2600.bin")
+
+        self.transposition_table = {}
+        self.transposition_table_max_size = 1000000
+        self.eval_cache = {}
+
+        self.killer_moves = {}
+        self.counter_moves = {}
+
+        self.history_table = {}
 
         self.piece_values = {
             chess.PAWN: 100,
@@ -157,24 +167,19 @@ class ChessBot:
         score = 0
 
         # Basic material count
-
         for piece in self.piece_values:
             score += len(board.pieces(piece, True)) * self.piece_values[piece]
-
             score -= len(board.pieces(piece, False)) * self.piece_values[piece]
 
         # Bishop pair bonus
-
         if len(board.pieces(chess.BISHOP, True)) >= 2:
             score += 50
-
         if len(board.pieces(chess.BISHOP, False)) >= 2:
             score -= 50
 
         # Rook pair penalty
         if len(board.pieces(chess.ROOK, True)) >= 2:
             score -= 10
-
         if len(board.pieces(chess.ROOK, False)) >= 2:
             score += 10
 
@@ -186,10 +191,7 @@ class ChessBot:
 
         for color in [True, False]:
             pawns = list(board.pieces(chess.PAWN, color))
-            mult = 1 if color else -1
-            color_name = "White" if color else "Black"
             score = 0
-
 
             # Pawn files for isolated/doubled
             pawn_files = set(chess.square_file(p) for p in pawns)
@@ -200,7 +202,6 @@ class ChessBot:
                 file_counts[file] = file_counts.get(file, 0) + 1
 
             for pawn in pawns:
-                square_name = chess.square_name(pawn)
                 rank = chess.square_rank(pawn)
                 file = chess.square_file(pawn)
                 pawn_score = 0
@@ -304,34 +305,39 @@ class ChessBot:
         return score
 
     def evaluate_position(self, board):
+        #Check position cache
+        board_hash = chess.polyglot.zobrist_hash(board)
+        if board_hash in self.eval_cache:
+            return self.eval_cache[board_hash]
 
         if board.is_game_over():
-
             if board.is_checkmate():
                 return -10000 if board.turn else 10000
 
             return 0  # Draw
 
-        score = 0
+        phase = get_game_phase(board)
+        material = self.evaluate_material(board)
+        position = self.evaluate_piece_position(board)
 
-        # Material and piece position evaluation
+        if abs(material) < 500 or phase > 128:
+            pawn_structure = self.evaluate_pawn_structure(board)
+            king_safety = self.evaluate_king_safety(board)
+            mobility = self.evaluate_mobility(board)
+            key_squares = self.evaluate_key_square_control(board)
+        else:
+            pawn_structure = king_safety = mobility = key_squares = 0
 
-        score += self.evaluate_material(board)
+        score = (
+            material +
+            position +
+            pawn_structure +
+            king_safety +
+            mobility +
+            key_squares
+        )
 
-        score += self.evaluate_piece_position(board)
-
-        # Pawn structure
-
-        score += self.evaluate_pawn_structure(board)
-
-        # King safety
-
-        score += self.evaluate_king_safety(board)
-
-        score += self.evaluate_mobility(board)
-
-        score += self.evaluate_key_square_control(board)
-
+        self.eval_cache[board_hash] = score
         return score
 
     def evaluate_mobility(self, board):
@@ -349,17 +355,14 @@ class ChessBot:
             score = 0
 
             for piece_type, weight in weights.items():
-                piece_mobility = 0
-
                 for square in board.pieces(piece_type, color):
-                    moves = [
-                        move for move in board.legal_moves if move.from_square == square
-                    ]
-                    count = len(moves)
-                    weighted = count * weight
-                    piece_mobility += weighted
+                    # Get all legal moves for this piece
+                    mobility_count = 0
+                    for move in board.legal_moves:
+                        if move.from_square == square:
+                            mobility_count += 1
 
-                score += piece_mobility
+                    score += mobility_count * weight
 
             total_score += score * mult
 
@@ -372,77 +375,14 @@ class ChessBot:
         for square in key_squares:
             white_attackers = board.attackers(chess.WHITE, square)
             black_attackers = board.attackers(chess.BLACK, square)
-
-            w_count = len(white_attackers)
-            b_count = len(black_attackers)
-
-            square_name = chess.square_name(square)
-
-            score += 5 * w_count
-            score -= 5 * b_count
+            score += 5 * len(white_attackers)
+            score -= 5 * len(black_attackers)
 
         return score
 
-    def minimax(self, board, depth, alpha, beta, maximizing_player):
-
-        """
-
-        Minimax implementation.
-
-        Returns (best_score, best_move)
-
-        """
-
-        if depth == 0 or board.is_game_over():
-            return self.evaluate_position(board), None
-
-        best_move = None
-
-        if maximizing_player:
-
-            max_eval = float('-inf')
-
-            for move in board.legal_moves:
-
-                board.push(move)
-
-                eval, _ = self.minimax(board, depth - 1, alpha, beta, False)
-
-                board.pop()
-
-                if eval > max_eval:
-                    max_eval = eval
-
-                    best_move = move
-
-                alpha = max(alpha, eval)
-                if beta <= alpha:
-                    break
-
-            return max_eval, best_move
-
-        else:
-
-            min_eval = float('inf')
-
-            for move in board.legal_moves:
-
-                board.push(move)
-
-                eval, _ = self.minimax(board, depth - 1, alpha, beta, True)
-
-                board.pop()
-
-                if eval < min_eval:
-                    min_eval = eval
-
-                    best_move = move
-
-                beta = min(beta, eval)
-                if beta <= alpha:
-                    break
-
-            return min_eval, best_move
+    def minimax(self, board, depth, alpha, beta, maximizing_player, ply=0):
+        """Legacy minimax implementation - use PVS instead for better performance"""
+        return self.pvs(board, depth, alpha, beta, maximizing_player, ply)
 
     def get_move(self, board: ChessBoard):
 
@@ -451,6 +391,9 @@ class ChessBot:
         Main method to select the best move.
 
         """
+        start_time = time.time()
+        time_limit = 5
+
         if isinstance(board, ChessBoard):
             board = board.get_board_state()
 
@@ -464,8 +407,424 @@ class ChessBot:
             print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
             return polyglot_move
 
-        # Otherwise fallback to search
-        score, best_move = self.minimax(board, depth=3, alpha=float('-inf'), beta=float('inf'),
-                                        maximizing_player=board.turn)
-        print("Best move found was " + str(best_move) + " with a score of " + str(score))
+        self.manage_transposition_table()
+        self.killer_moves = {}
+
+        best_move = None
+        best_score = 0
+        max_depth = 15
+
+        # Initial full-width search for first few depths
+        for depth in range(1, 3):
+            if time.time() - start_time > time_limit:
+                break
+            best_score, best_move = self.pvs(board, depth, float('-inf'), float('inf'), board.turn)
+
+            if best_move:
+                elapsed = time.time() - start_time
+                print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {best_score}")
+
+        # Use aspiration windows for deeper searches
+        window = 50  # Initial window size
+        for depth in range(3, max_depth + 1):
+            if time.time() - start_time > time_limit:
+                break
+
+            alpha = best_score - window
+            beta = best_score + window
+
+            tries = 0
+            research_needed = True
+
+            while research_needed and tries < 3:  # Try widening window up to 3 times
+                score, move = self.pvs(board, depth, alpha, beta, board.turn)
+
+                if score <= alpha:  # Failed low, research with wider window
+                    alpha = max(alpha - window * (tries + 1), -10000)
+                    window *= 2
+                    tries += 1
+                    continue
+
+                if score >= beta:  # Failed high, research with wider window
+                    beta = min(beta + window * (tries + 1), 10000)
+                    window *= 2
+                    tries += 1
+                    continue
+
+                # Success - score within window
+                best_score = score
+                if move:
+                    best_move = move
+                research_needed = False
+
+            elapsed = time.time() - start_time
+            print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {best_score}")
+
+            # If we found a mate or nearly out of time, stop searching
+            if abs(best_score) > 9000 or (time.time() - start_time) > (time_limit * 0.8):
+                break
+
+        # If no move was found, use the first legal move
+        if not best_move and list(board.legal_moves):
+            best_move = list(board.legal_moves)[0]
+
         return best_move
+
+    def order_moves(self, board, quiescence=False):
+        """Order moves for better alpha-beta pruning efficiency"""
+        moves = list(board.legal_moves)
+        scored_moves = []
+
+        ply = len(board.move_stack)
+        killer_move = self.killer_moves.get(ply)
+        previous_move = board.move_stack[-1] if board.move_stack else None
+        counter_move = None
+
+        # Get counter move if available
+        if previous_move:
+            counter_key = (previous_move.from_square, previous_move.to_square)
+            counter_move = self.counter_moves.get(counter_key)
+
+        for move in moves:
+            score = 0
+
+            # PV move from transposition table gets highest priority
+            board_hash = chess.polyglot.zobrist_hash(board)
+            if board_hash in self.transposition_table:
+                _, _, hash_move, _ = self.transposition_table[board_hash]
+                if hash_move == move:
+                    score += 10000
+
+            #Killer move
+            if killer_move == move:
+                score += 9000
+
+            #History heuristic
+            if (board.turn, move.from_square, move.to_square) in self.history_table:
+                score += self.history_table[(board.turn, move.from_square, move.to_square)]
+
+            # Prioritize captures by MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+            if board.is_capture(move):
+                victim = board.piece_at(move.to_square)
+                aggressor = board.piece_at(move.from_square)
+
+                if victim and aggressor:
+                    victim_value = self.get_piece_value(victim)
+                    aggressor_value = self.get_piece_value(aggressor)
+
+                    # More refined MVV-LVA scoring
+                    if victim_value >= aggressor_value:
+                        score += 8000 + 10 * victim_value - aggressor_value
+                    else:
+                        # Potentially bad captures score lower than non-captures
+                        score += 7000 + 10 * victim_value - aggressor_value
+
+                if board.is_en_passant(move):
+                    score += 100
+
+            #Promotions
+            if move.promotion:
+                score += 7000 + self.get_piece_value(chess.Piece(move.promotion,True)) - 100
+
+            # Checks
+            if not quiescence:
+                board.push(move)
+                if board.is_check():
+                    score += 500
+                board.pop()
+
+            # Center control
+            piece = board.piece_at(move.from_square)
+            if piece and piece.piece_type == chess.PAWN:
+                if move.to_square in [chess.E4, chess.D4, chess.E5, chess.D5]:
+                    score += 20
+
+            # Use move string as stable tiebreaker
+            scored_moves.append((score, str(move), move))
+
+        # Sort moves by score in descending order
+        scored_moves.sort(reverse=True)
+        return [move for _, _, move in scored_moves]
+
+    def get_piece_value(self, piece):
+        """Get the value of a piece for move ordering"""
+        if piece is None:
+            return 0
+        return self.piece_values.get(piece.piece_type, 0)
+
+    def quiescence(self, board, alpha, beta, depth=0, max_depth=5):
+        """Quiescence search to handle tactical positions"""
+        stand_pat = self.evaluate_position(board)
+
+        if depth >= max_depth:
+            return stand_pat
+
+        if stand_pat >= beta:
+            return beta
+
+        if alpha < stand_pat:
+            alpha = stand_pat
+
+        # Only consider captures and checks
+        for move in self.order_moves(board, quiescence=True):
+            if not board.is_capture(move):
+                continue
+
+            if not self.is_likely_good_capture(board, move):
+                continue
+
+            board.push(move)
+            score = -self.quiescence(board, -beta, -alpha, depth + 1, max_depth)
+            board.pop()
+
+            if score >= beta:
+                return beta
+
+            if score > alpha:
+                alpha = score
+
+        return alpha
+
+    def update_history_heuristic(self, board, move, depth):
+        """Update history table for successful moves"""
+        self.history_table[(board.turn, move.from_square, move.to_square)] = \
+            self.history_table.get((board.turn, move.from_square, move.to_square), 0) + depth * depth
+
+    def update_killer_move(self, move, ply):
+        """Update killer move table"""
+        self.killer_moves[ply] = move
+
+    def is_likely_good_capture(self, board, move):
+        """Static Exchange Evaluation (SEE) approximation - determines if a capture is likely good"""
+        if not board.is_capture(move):
+            return True  # Not a capture, no need to evaluate
+
+        victim = board.piece_at(move.to_square)
+        aggressor = board.piece_at(move.from_square)
+
+        if not victim or not aggressor:
+            return True  # Edge case
+
+        victim_value = self.get_piece_value(victim)
+        aggressor_value = self.get_piece_value(aggressor)
+
+        # En passant is always good
+        if board.is_en_passant(move):
+            return True
+
+        # Simple MVV-LVA (Most Valuable Victim - Least Valuable Aggressor)
+        if victim_value >= aggressor_value:
+            return True  # Capturing equal or higher value piece
+
+        # For lower value captures, check if the square is defended
+        board.push(move)
+        recapture_possible = bool(board.attackers(not board.turn, move.to_square))
+        board.pop()
+
+        # If victim is worth less and square is defended, likely a bad capture
+        if recapture_possible:
+            return False
+
+        return True  # No recapture possible, so capture is probably good
+
+    def is_endgame(self, board):
+        return (len(board.pieces(chess.QUEEN, chess.WHITE)) +
+                len(board.pieces(chess.QUEEN, chess.BLACK)) == 0 or
+                get_game_phase(board) < 100)
+
+    def pvs(self, board, depth, alpha, beta, maximizing_player, ply=0):
+        """Principal Variation Search - more efficient than standard minimax"""
+
+        # Check for repetitions and fifty-move rule
+        if board.is_repetition(2) or board.halfmove_clock >= 100:
+            return 0, None
+
+        # Transposition table lookup
+        board_hash = chess.polyglot.zobrist_hash(board)
+        if board_hash in self.transposition_table:
+            stored_depth, stored_value, stored_move, flag = self.transposition_table.get(board_hash, (0, 0, None, 0))
+            if stored_depth >= depth:
+                if flag == 0:  # Exact score
+                    return stored_value, stored_move
+                elif flag == 1 and stored_value <= alpha:  # Upper bound
+                    return alpha, stored_move
+                elif flag == 2 and stored_value >= beta:  # Lower bound
+                    return beta, stored_move
+
+        if depth == 0:
+            return self.quiescence(board, alpha, beta), None
+
+        if board.is_game_over():
+            if board.is_checkmate():
+                return (-10000 + ply if board.turn else 10000 - ply), None  # Prefer shorter mates
+            return 0, None  # Draw
+
+        alpha_orig = alpha  # For transposition table flag
+        best_move = None
+
+        # Internal Iterative Deepening
+        if depth >= 4 and best_move is None:
+            # Do a shallower search to get a good first move
+            _, iid_move = self.pvs(board, depth // 2, alpha, beta, maximizing_player, ply)
+            if iid_move:
+                # Ensure this move gets searched first-
+                self.transposition_table[board_hash] = (0, 0, iid_move, 0)
+
+        # Try null move pruning in non-zugzwang positions
+        if depth >= 3 and not board.is_check() and not self.is_endgame(board):
+            # Adaptive null move reduction
+            R = 3 + depth // 6
+
+            board.push(chess.Move.null())
+            score, _ = self.pvs(board, depth - 1 - R, -beta, -beta + 1, not maximizing_player, ply + 1)
+            score = -score
+            board.pop()
+
+            if score >= beta:  # Fail-high
+                return beta, None  # Null-move cutoff
+
+        # Futility pruning
+        if depth <= 2 and not board.is_check():
+            static_eval = self.evaluate_position(board)
+            futility_margin = 100 * depth  # Adjust based on piece values
+
+            if maximizing_player and static_eval + futility_margin <= alpha:
+                return static_eval, None
+            elif not maximizing_player and static_eval - futility_margin >= beta:
+                return static_eval, None
+
+        # Get ordered moves
+        moves = self.order_moves(board)
+        if not moves:
+            return self.evaluate_position(board), None
+
+        best_score = float('-inf') if maximizing_player else float('inf')
+
+        # First move gets full window
+        first_move = moves[0]
+        board.push(first_move)
+
+        if maximizing_player:
+            score, _ = self.pvs(board, depth - 1, -beta, -alpha, False, ply + 1)
+            score = -score
+
+            board.pop()
+
+            if score > best_score:
+                best_score = score
+                best_move = first_move
+
+            if score > alpha:
+                alpha = score
+
+            if alpha >= beta:
+                self.update_killer_move(first_move, ply)
+                self.update_history_heuristic(board, first_move, depth)
+
+                # Store in transposition table
+                self.transposition_table[board_hash] = (depth, best_score, best_move, 2)  # Lower bound
+                return best_score, best_move
+        else:
+            score, _ = self.pvs(board, depth - 1, -beta, -alpha, True, ply + 1)
+            score = -score
+
+            board.pop()
+
+            if score < best_score:
+                best_score = score
+                best_move = first_move
+
+            if score < beta:
+                beta = score
+
+            if alpha >= beta:
+                self.update_killer_move(first_move, ply)
+                self.update_history_heuristic(board, first_move, depth)
+
+                # Store in transposition table
+                self.transposition_table[board_hash] = (depth, best_score, best_move, 1)  # Upper bound
+                return best_score, best_move
+
+        # Rest of moves with LMR and null window
+        for i, move in enumerate(moves[1:], 1):
+            board.push(move)
+
+            # Late Move Reduction
+            do_full_search = True
+            if i >= 4 and depth >= 3 and not board.is_check() and not board.is_capture(move) and move.promotion is None:
+                # Reduce search depth for late quiet moves
+                R = 1 + depth // 3 + min(i // 6, 3)
+                score, _ = self.pvs(board, depth - 1 - R, -alpha - 1, -alpha, not maximizing_player, ply + 1)
+                score = -score
+                do_full_search = (score > alpha)
+            else:
+                do_full_search = True
+
+            # PVS with null window first
+            if do_full_search:
+                score, _ = self.pvs(board, depth - 1, -alpha - 1, -alpha, not maximizing_player, ply + 1)
+                score = -score
+
+                # If we get a score between alpha and beta, do a full re-search
+                if alpha < score < beta:
+                    score, _ = self.pvs(board, depth - 1, -beta, -alpha, not maximizing_player, ply + 1)
+                    score = -score
+
+            board.pop()
+
+            if maximizing_player:
+                if score > best_score:
+                    best_score = score
+                    best_move = move
+
+                if score > alpha:
+                    alpha = score
+
+                if alpha >= beta:
+                    self.update_killer_move(move, ply)
+                    self.update_history_heuristic(board, move, depth)
+
+                    # Update counter moves table
+                    if len(board.move_stack) > 0:
+                        prev_move = board.move_stack[-2]
+                        counter_key = (prev_move.from_square, prev_move.to_square)
+                        self.counter_moves[counter_key] = move
+
+                    break
+            else:
+                if score < best_score:
+                    best_score = score
+                    best_move = move
+
+                if score < beta:
+                    beta = score
+
+                if alpha >= beta:
+                    self.update_killer_move(move, ply)
+                    self.update_history_heuristic(board, move, depth)
+
+                    # Update counter moves table
+                    if len(board.move_stack) > 0:
+                        prev_move = board.move_stack[-2]
+                        counter_key = (prev_move.from_square, prev_move.to_square)
+                        self.counter_moves[counter_key] = move
+
+                    break
+
+        # Store position in transposition table
+        if best_score <= alpha_orig:
+            flag = 1  # Upper bound
+        elif best_score >= beta:
+            flag = 2  # Lower bound
+        else:
+            flag = 0  # Exact score
+
+        self.transposition_table[board_hash] = (depth, best_score, best_move, flag)
+        return best_score, best_move
+
+    def manage_transposition_table(self):
+        if len(self.transposition_table) > self.transposition_table_max_size:
+            # Simple approach: clear half the table
+            keys = list(self.transposition_table.keys())
+            for key in keys[:len(keys) // 2]:
+                del self.transposition_table[key]

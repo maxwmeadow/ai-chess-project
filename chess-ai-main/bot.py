@@ -385,18 +385,15 @@ class ChessBot:
         return self.pvs(board, depth, alpha, beta, maximizing_player, ply)
 
     def get_move(self, board: ChessBoard):
-
-        """
-
-        Main method to select the best move.
-
-        """
+        """Main method to select the best move."""
         start_time = time.time()
         time_limit = 5
+        time_for_move = min(time_limit * 0.9, time_limit - 0.1)
 
         if isinstance(board, ChessBoard):
             board = board.get_board_state()
 
+        # Try book moves first
         book_move = self.opening_book.get_move(board)
         if book_move and book_move in board.legal_moves:
             print(f"[DEBUG] Book move played: {book_move}")
@@ -407,64 +404,32 @@ class ChessBot:
             print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
             return polyglot_move
 
+        # Reset tables for new search
         self.transposition_table = {}
         self.killer_moves = {}
 
         best_move = None
-        best_score = 0
         max_depth = 15
 
-        # Initial full-width search for first few depths
-        for depth in range(1, 3):
-            if time.time() - start_time > time_limit:
+        # Iterative deepening
+        for depth in range(1, max_depth + 1):
+            if time.time() - start_time > time_for_move:
                 break
-            best_score, best_move = self.pvs(board, depth, float('-inf'), float('inf'), board.turn)
 
-            if best_move:
+            score, move = self.negamax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
+
+            if move:
+                best_move = move
                 elapsed = time.time() - start_time
-                print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {best_score}")
+                print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {score}")
 
-        # Use aspiration windows for deeper searches
-        window = 50  # Initial window size
-        for depth in range(3, max_depth + 1):
-            if time.time() - start_time > time_limit:
+            # Early exit conditions
+            if abs(score) > 9000 and depth > 3:  # Mate found
+                break
+            if score > 300 and depth > 5 and (time.time() - start_time) > (time_for_move * 0.5):
                 break
 
-            alpha = best_score - window
-            beta = best_score + window
-
-            tries = 0
-            research_needed = True
-
-            while research_needed and tries < 3:  # Try widening window up to 3 times
-                score, move = self.pvs(board, depth, alpha, beta, board.turn)
-
-                if score <= alpha:  # Failed low, research with wider window
-                    alpha = max(alpha - window * (tries + 1), -10000)
-                    window *= 2
-                    tries += 1
-                    continue
-
-                if score >= beta:  # Failed high, research with wider window
-                    beta = min(beta + window * (tries + 1), 10000)
-                    window *= 2
-                    tries += 1
-                    continue
-
-                # Success - score within window
-                best_score = score
-                if move:
-                    best_move = move
-                research_needed = False
-
-            elapsed = time.time() - start_time
-            print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {best_score}")
-
-            # If we found a mate or nearly out of time, stop searching
-            if abs(best_score) > 9000 or (time.time() - start_time) > (time_limit * 0.8):
-                break
-
-        # If no move was found, use the first legal move
+        # Fallback if no move found
         if not best_move and list(board.legal_moves):
             best_move = list(board.legal_moves)[0]
 
@@ -494,6 +459,21 @@ class ChessBot:
                 _, _, hash_move, _ = self.transposition_table[board_hash]
                 if hash_move == move:
                     score += 10000
+
+            # Counter move bonus
+            if counter_move == move:
+                score += 8500  # Between PV and killer moves
+
+            # Castling bonus (for early/middle game)
+            if board.is_castling(move):
+                score += 500
+
+            piece = board.piece_at(move.from_square)
+            to_rank = chess.square_rank(move.to_square)
+            if piece:
+                if piece.piece_type in [chess.ROOK, chess.QUEEN]:
+                    if (piece.color and to_rank == 6) or (not piece.color and to_rank == 1):
+                        score += 50
 
             #Killer move
             if killer_move == move:
@@ -552,39 +532,53 @@ class ChessBot:
             return 0
         return self.piece_values.get(piece.piece_type, 0)
 
-    def quiescence(self, board, alpha, beta, depth=0, max_depth=5):
-        """Quiescence search to handle tactical positions"""
-        stand_pat = self.evaluate_position(board)
-
-        if depth >= max_depth:
-            return stand_pat
+    def quiescence(self, board, alpha, beta, color, max_depth=3, current_depth=0):
+        """Simplified quiescence search."""
+        stand_pat = self.evaluate_position(board) * color
 
         if stand_pat >= beta:
             return beta
-
         if alpha < stand_pat:
             alpha = stand_pat
 
-        # Only consider captures
-        for move in self.order_moves(board, quiescence=True):
-            if not board.is_capture(move):
-                continue
+        if current_depth >= max_depth:
+            return stand_pat
 
-            # Delta pruning - skip likely bad captures
-            if not self.is_likely_good_capture(board, move):
-                continue
+        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        captures = self.order_captures(board, captures)
 
+        for move in captures:
             board.push(move)
-            score = -self.quiescence(board, -beta, -alpha, depth + 1, max_depth)
+            score = -self.quiescence(board, -beta, -alpha, -color, max_depth, current_depth + 1)
             board.pop()
 
             if score >= beta:
                 return beta
-
             if score > alpha:
                 alpha = score
 
         return alpha
+
+    def order_captures(self, board, moves):
+        """Simple ordering for captures in quiescence search."""
+        scored_moves = []
+
+        for move in moves:
+            score = 0
+            victim = board.piece_at(move.to_square)
+            aggressor = board.piece_at(move.from_square)
+
+            if victim and aggressor:
+                victim_value = self.get_piece_value(victim)
+                aggressor_value = self.get_piece_value(aggressor)
+                score = 10 * victim_value - aggressor_value
+
+            # Add the move string as a stable secondary sort key
+            scored_moves.append((score, str(move), move))
+
+        # Sort by score first, then by move string for stability
+        scored_moves.sort(reverse=True)
+        return [move for _, _, move in scored_moves]
 
     def update_history_heuristic(self, board, move, depth):
         """Update history table for successful moves"""
@@ -633,195 +627,66 @@ class ChessBot:
                 len(board.pieces(chess.QUEEN, chess.BLACK)) == 0 or
                 get_game_phase(board) < 100)
 
-    def pvs(self, board, depth, alpha, beta, maximizing_player, ply=0):
-        """Principal Variation Search - more efficient than standard minimax"""
-
-        # Check for repetitions and fifty-move rule
-        if board.is_repetition(2) or board.halfmove_clock >= 100:
-            return 0, None
-
-        # Transposition table lookup
-        board_hash = chess.polyglot.zobrist_hash(board)
-        if board_hash in self.transposition_table:
-            stored_depth, stored_value, stored_move, flag = self.transposition_table.get(board_hash, (0, 0, None, 0))
-            if stored_depth >= depth:
-                if flag == 0:  # Exact score
-                    return stored_value, stored_move
-                elif flag == 1 and stored_value <= alpha:  # Upper bound
-                    return alpha, stored_move
-                elif flag == 2 and stored_value >= beta:  # Lower bound
-                    return beta, stored_move
-
-        if depth == 0:
-            return self.quiescence(board, alpha, beta), None
-
+    def negamax(self, board, depth, alpha, beta, color, ply=0):
+        """Negamax algorithm with alpha-beta pruning."""
+        # Check for game over
         if board.is_game_over():
             if board.is_checkmate():
-                return (-10000 + ply if board.turn else 10000 - ply), None  # Prefer shorter mates
+                return -10000 * color + ply * color, None
             return 0, None  # Draw
 
-        alpha_orig = alpha  # For transposition table flag
+        # Check for transposition table hit
+        board_hash = chess.polyglot.zobrist_hash(board)
+        if board_hash in self.transposition_table:
+            entry_depth, entry_score, entry_move, entry_type = self.transposition_table[board_hash]
+            if entry_depth >= depth:
+                if entry_type == "exact":
+                    return entry_score * color, entry_move
+
+        # Quiescence search at leaf nodes
+        if depth == 0:
+            return self.quiescence(board, alpha, beta, color), None
+
         best_move = None
+        best_score = float('-inf')
 
-        # Internal Iterative Deepening
-        if depth >= 4 and best_move is None:
-            _, iid_move = self.pvs(board, depth // 2, alpha, beta, maximizing_player, ply)
-            if iid_move:
-                self.transposition_table[board_hash] = (0, 0, iid_move, 0)
-
-        # Null move pruning
-        if depth >= 3 and not board.is_check() and not self.is_endgame(board):
-            R = 3 + depth // 6
-
-            board.push(chess.Move.null())
-            score, _ = self.pvs(board, depth - 1 - R, -beta, -beta + 1, not maximizing_player, ply + 1)
-            score = -score
-            board.pop()
-
-            if score >= beta:
-                return beta, None
-
-        # Futility pruning
-        if depth <= 2 and not board.is_check():
-            static_eval = self.evaluate_position(board)
-            futility_margin = 100 * depth
-            if maximizing_player and static_eval + futility_margin <= alpha:
-                return static_eval, None
-            elif not maximizing_player and static_eval - futility_margin >= beta:
-                return static_eval, None
-
+        # Move ordering
         moves = self.order_moves(board)
-        if not moves:
-            return self.evaluate_position(board), None
 
-        best_score = float('-inf') if maximizing_player else float('inf')
-
-        # First move (full window search)
-        first_move = moves[0]
-        board.push(first_move)
-
-        if maximizing_player:
-            score, _ = self.pvs(board, depth - 1, -beta, -alpha, False, ply + 1)
+        for move in moves:
+            board.push(move)
+            score, _ = self.negamax(board, depth - 1, -beta, -alpha, -color, ply + 1)
             score = -score
             board.pop()
 
             if score > best_score:
                 best_score = score
-                best_move = first_move
+                best_move = move
 
-            if score > alpha:
-                alpha = score
-
+            alpha = max(alpha, score)
             if alpha >= beta:
-                self.update_killer_move(first_move, ply)
-                self.update_history_heuristic(board, first_move, depth)
+                # Store killer move
+                self.update_killer_move(move, ply)
+                break
 
-                # --- FIX: Update counter move here ---
-                if len(board.move_stack) > 0:
-                    prev_move = board.move_stack[-1]
-                    counter_key = (prev_move.from_square, prev_move.to_square)
-                    self.counter_moves[counter_key] = first_move
-
-                self.transposition_table[board_hash] = (depth, best_score, best_move, 2)  # Lower bound
-                return best_score, best_move
-        else:
-            score, _ = self.pvs(board, depth - 1, -beta, -alpha, True, ply + 1)
-            score = -score
-            board.pop()
-
-            if score < best_score:
-                best_score = score
-                best_move = first_move
-
-            if score < beta:
-                beta = score
-
-            if alpha >= beta:
-                self.update_killer_move(first_move, ply)
-                self.update_history_heuristic(board, first_move, depth)
-
-                # --- FIX: Update counter move here ---
-                if len(board.move_stack) > 0:
-                    prev_move = board.move_stack[-1]
-                    counter_key = (prev_move.from_square, prev_move.to_square)
-                    self.counter_moves[counter_key] = first_move
-
-                self.transposition_table[board_hash] = (depth, best_score, best_move, 1)  # Upper bound
-                return best_score, best_move
-
-        # Rest of moves with LMR and null window
-        for i, move in enumerate(moves[1:], 1):
-            board.push(move)
-
-            do_full_search = True
-            if i >= 4 and depth >= 3 and not board.is_check() and not board.is_capture(move) and move.promotion is None:
-                R = 1 + depth // 3 + min(i // 6, 3)
-                score, _ = self.pvs(board, depth - 1 - R, -alpha - 1, -alpha, not maximizing_player, ply + 1)
-                score = -score
-                do_full_search = (score > alpha)
-
-            if do_full_search:
-                score, _ = self.pvs(board, depth - 1, -alpha - 1, -alpha, not maximizing_player, ply + 1)
-                score = -score
-
-                if alpha < score < beta:
-                    score, _ = self.pvs(board, depth - 1, -beta, -alpha, not maximizing_player, ply + 1)
-                    score = -score
-
-            board.pop()
-
-            if maximizing_player:
-                if score > best_score:
-                    best_score = score
-                    best_move = move
-
-                if score > alpha:
-                    alpha = score
-
-                if alpha >= beta:
-                    self.update_killer_move(move, ply)
-                    self.update_history_heuristic(board, move, depth)
-
-                    # --- FIX: Update counter move here ---
-                    if len(board.move_stack) > 0:
-                        prev_move = board.move_stack[-1]
-                        counter_key = (prev_move.from_square, prev_move.to_square)
-                        self.counter_moves[counter_key] = move
-
-                    break
-            else:
-                if score < best_score:
-                    best_score = score
-                    best_move = move
-
-                if score < beta:
-                    beta = score
-
-                if alpha >= beta:
-                    self.update_killer_move(move, ply)
-                    self.update_history_heuristic(board, move, depth)
-
-                    if len(board.move_stack) > 0:
-                        prev_move = board.move_stack[-1]
-                        counter_key = (prev_move.from_square, prev_move.to_square)
-                        self.counter_moves[counter_key] = move
-
-                    break
-
-        # Store position in transposition table
-        if best_score <= alpha_orig:
-            flag = 1  # Upper bound
+        # Store in transposition table
+        entry_type = "exact"
+        if best_score <= alpha:
+            entry_type = "upperbound"
         elif best_score >= beta:
-            flag = 2  # Lower bound
-        else:
-            flag = 0  # Exact score
+            entry_type = "lowerbound"
 
-        self.transposition_table[board_hash] = (depth, best_score, best_move, flag)
+        self.transposition_table[board_hash] = (depth, best_score * color, best_move, entry_type)
+
         return best_score, best_move
 
     def manage_transposition_table(self):
         if len(self.transposition_table) > self.transposition_table_max_size:
-            # Simple approach: clear half the table
-            keys = list(self.transposition_table.keys())
-            for key in keys[:len(keys) // 2]:
+            # Sort entries by depth (preserve deeper searches)
+            entries = [(key, value[0]) for key, value in self.transposition_table.items()]
+            entries.sort(key=lambda x: x[1])  # Sort by depth
+
+            # Remove 25% of shallowest depth entries
+            keys_to_remove = [entry[0] for entry in entries[:len(entries) // 4]]
+            for key in keys_to_remove:
                 del self.transposition_table[key]

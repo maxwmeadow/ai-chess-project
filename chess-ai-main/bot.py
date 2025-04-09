@@ -416,7 +416,7 @@ class ChessBot:
             if time.time() - start_time > time_for_move:
                 break
 
-            score, move = self.negamax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
+            score, move = self.minimax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
 
             if move:
                 best_move = move
@@ -627,59 +627,6 @@ class ChessBot:
                 len(board.pieces(chess.QUEEN, chess.BLACK)) == 0 or
                 get_game_phase(board) < 100)
 
-    def negamax(self, board, depth, alpha, beta, color, ply=0):
-        """Negamax algorithm with alpha-beta pruning."""
-        # Check for game over
-        if board.is_game_over():
-            if board.is_checkmate():
-                return -10000 * color + ply * color, None
-            return 0, None  # Draw
-
-        # Check for transposition table hit
-        board_hash = chess.polyglot.zobrist_hash(board)
-        if board_hash in self.transposition_table:
-            entry_depth, entry_score, entry_move, entry_type = self.transposition_table[board_hash]
-            if entry_depth >= depth:
-                if entry_type == "exact":
-                    return entry_score * color, entry_move
-
-        # Quiescence search at leaf nodes
-        if depth == 0:
-            return self.quiescence(board, alpha, beta, color), None
-
-        best_move = None
-        best_score = float('-inf')
-
-        # Move ordering
-        moves = self.order_moves(board)
-
-        for move in moves:
-            board.push(move)
-            score, _ = self.negamax(board, depth - 1, -beta, -alpha, -color, ply + 1)
-            score = -score
-            board.pop()
-
-            if score > best_score:
-                best_score = score
-                best_move = move
-
-            alpha = max(alpha, score)
-            if alpha >= beta:
-                # Store killer move
-                self.update_killer_move(move, ply)
-                break
-
-        # Store in transposition table
-        entry_type = "exact"
-        if best_score <= alpha:
-            entry_type = "upperbound"
-        elif best_score >= beta:
-            entry_type = "lowerbound"
-
-        self.transposition_table[board_hash] = (depth, best_score * color, best_move, entry_type)
-
-        return best_score, best_move
-
     def manage_transposition_table(self):
         if len(self.transposition_table) > self.transposition_table_max_size:
             # Sort entries by depth (preserve deeper searches)
@@ -690,3 +637,66 @@ class ChessBot:
             keys_to_remove = [entry[0] for entry in entries[:len(entries) // 4]]
             for key in keys_to_remove:
                 del self.transposition_table[key]
+
+    def pvs(self, board, depth, alpha, beta, color, ply=0):
+        """Principal Variation Search (PVS) with alpha-beta pruning."""
+        if board.is_game_over():
+            if board.is_checkmate():
+                return -10000 * color + ply * color, None
+            return 0, None  # Draw
+
+        # Transposition table lookup
+        board_hash = chess.polyglot.zobrist_hash(board)
+        if board_hash in self.transposition_table:
+            entry_depth, entry_score, entry_move, entry_type = self.transposition_table[board_hash]
+            if entry_depth >= depth:
+                if entry_type == "exact":
+                    return entry_score * color, entry_move
+
+        if depth == 0:
+            return self.quiescence(board, alpha, beta, color), None
+
+        best_move = None
+        moves = self.order_moves(board)
+
+        first_move = True
+        original_alpha = alpha
+
+        for move in moves:
+            board.push(move)
+
+            if first_move:
+                score, _ = self.pvs(board, depth - 1, -beta, -alpha, -color, ply + 1)
+                score = -score
+                first_move = False
+            else:
+                # Null window search
+                score, _ = self.pvs(board, depth - 1, -alpha - 1, -alpha, -color, ply + 1)
+                score = -score
+
+                # If score improved alpha, do full re-search
+                if alpha < score < beta:
+                    score, _ = self.pvs(board, depth - 1, -beta, -score, -color, ply + 1)
+                    score = -score
+
+            board.pop()
+
+            if score > alpha:
+                alpha = score
+                best_move = move
+
+            if alpha >= beta:
+                # Beta cutoff, update killer move
+                self.update_killer_move(move, ply)
+                break
+
+        # Store in transposition table
+        entry_type = "exact"
+        if alpha <= original_alpha:
+            entry_type = "upperbound"
+        elif alpha >= beta:
+            entry_type = "lowerbound"
+
+        self.transposition_table[board_hash] = (depth, alpha * color, best_move, entry_type)
+
+        return alpha, best_move

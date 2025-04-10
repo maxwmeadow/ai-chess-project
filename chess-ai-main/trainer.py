@@ -5,13 +5,18 @@ from bot import ChessBot
 import json
 
 def save_bot_to_json(bot, filename):
+    piece_name_map = {
+        1: "PAWN",
+        2: "KNIGHT",
+        3: "BISHOP",
+        4: "ROOK",
+        5: "QUEEN",
+        6: "KING"
+    }
+
     data = {
-        "piece_values": {piece_type.name: value for piece_type, value in bot.piece_values.items()},
-        "position_scores": {piece_type.name: table for piece_type, table in bot.position_scores.items()},
-        "king_shield_bonus": getattr(bot, 'king_shield_bonus', None),
-        "open_file_penalty": getattr(bot, 'open_file_penalty', None),
-        "attack_weights": getattr(bot, 'attack_weights', None),
-        "mobility_weights": getattr(bot, 'mobility_weights', None)
+        "piece_values": {piece_name_map[piece_type]: value for piece_type, value in bot.piece_values.items()},
+        "position_scores": {piece_name_map[piece_type]: table for piece_type, table in bot.position_scores.items()},
     }
     with open(filename, 'w') as f:
         json.dump(data, f, indent=4)
@@ -27,15 +32,6 @@ def load_bot_from_json(bot, filename):
 
     for name, table in data['position_scores'].items():
         bot.position_scores[reverse_piece_map[name]] = table
-
-    if 'king_shield_bonus' in data:
-        bot.king_shield_bonus = data['king_shield_bonus']
-    if 'open_file_penalty' in data:
-        bot.open_file_penalty = data['open_file_penalty']
-    if 'attack_weights' in data:
-        bot.attack_weights = data['attack_weights']
-    if 'mobility_weights' in data:
-        bot.mobility_weights = data['mobility_weights']
 
 class SelfPlayTrainer:
     def __init__(self, bot_constructor, games_per_iteration=10, iterations=3):
@@ -73,11 +69,16 @@ class SelfPlayTrainer:
 
     def create_challenger(self):
         challenger = self.bot_constructor()
+
+        # Mutate piece values
         for piece in challenger.piece_values:
             challenger.piece_values[piece] *= random.uniform(0.95, 1.05)
+
+        # Mutate piece-square tables
         for piece in challenger.position_scores:
             for i in range(len(challenger.position_scores[piece])):
                 challenger.position_scores[piece][i] *= random.uniform(0.95, 1.05)
+
         return challenger
 
     def play_match(self, bot1, bot2):
@@ -95,7 +96,7 @@ class SelfPlayTrainer:
         return results
 
     def play_game(self, board, white_bot, black_bot):
-        for _ in range(200):
+        for _ in range(80):
             if board.is_game_over():
                 break
             bot = white_bot if board.get_board_state().turn == chess.WHITE else black_bot
@@ -104,8 +105,8 @@ class SelfPlayTrainer:
                 board.make_move(move)
             else:
                 break
-        if board.is_checkmate():
-            return -1 if board.turn == chess.WHITE else 1
+        if board.get_board_state().is_checkmate():
+            return -1 if board.get_board_state().turn == chess.WHITE else 1
         return 0
 
     def analyze_results(self, results):

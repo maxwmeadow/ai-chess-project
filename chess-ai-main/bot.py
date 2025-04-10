@@ -319,6 +319,44 @@ class ChessBot:
 
         return score
 
+    def evaluate_threats(self, board):
+        score = 0
+
+        for color in [True, False]:
+            mult = 1 if color else -1
+            for sq in board.pieces(chess.PAWN, color) | \
+                      board.pieces(chess.KNIGHT, color) | \
+                      board.pieces(chess.BISHOP, color) | \
+                      board.pieces(chess.ROOK, color) | \
+                      board.pieces(chess.QUEEN, color):
+
+                attackers = board.attackers(not color, sq)
+                defenders = board.attackers(color, sq)
+
+                if attackers and not defenders:
+                    piece = board.piece_at(sq)
+                    if piece:
+                        score -= mult * (self.get_piece_value(piece) // 2)  # Penalize hanging
+
+        return score
+
+    def evaluate_piece_activity(self, board):
+        score = 0
+        for color in [True, False]:
+            mult = 1 if color else -1
+            for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
+                for sq in board.pieces(piece_type, color):
+                    mobility = 0
+                    for move in board.legal_moves:
+                        if move.from_square == sq:
+                            mobility += 1
+                    if mobility <= 2:
+                        score -= mult * 10  # Penalize stuck pieces
+                    else:
+                        score += mult * mobility  # Reward active pieces
+
+        return score
+
     def evaluate_position(self, board):
         # Check position cache
         board_hash = chess.polyglot.zobrist_hash(board)
@@ -343,6 +381,8 @@ class ChessBot:
             key_squares = self.evaluate_key_square_control(board)
             attack_score = self.evaluate_attacks(board)
             coordination = self.evaluate_piece_coordination(board)
+            threat_score = self.evaluate_threats(board)
+            activity_score = self.evaluate_piece_activity(board)
 
         elif phase < 128:
             # Middlegame / Early Endgame
@@ -352,6 +392,8 @@ class ChessBot:
             key_squares = self.evaluate_key_square_control(board)
             attack_score = self.evaluate_attacks(board)
             coordination = self.evaluate_piece_coordination(board)
+            threat_score = self.evaluate_threats(board)
+            activity_score = self.evaluate_piece_activity(board)
 
         else:
             # True Endgame
@@ -361,6 +403,8 @@ class ChessBot:
             key_squares = self.evaluate_key_square_control(board)
             attack_score = 0  # Attacks don't matter much when few pieces left
             coordination = self.evaluate_piece_coordination(board)
+            threat_score = self.evaluate_threats(board)
+            activity_score = 0
 
         score = (
                 material +
@@ -503,7 +547,7 @@ class ChessBot:
     def get_move(self, board: ChessBoard):
         """Main method to select the best move."""
         start_time = time.time()
-        time_limit = 5
+        time_limit = 1
         time_for_move = min(time_limit * 0.9, time_limit - 0.1)
 
         if isinstance(board, ChessBoard):
@@ -525,26 +569,38 @@ class ChessBot:
             print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
             return polyglot_move
 
-        # Reset tables for new search
-        self.transposition_table = {}
-        self.killer_moves = {}
+        self.manage_transposition_table()
 
         best_move = None
-        max_depth = 15
+        max_depth = 5
 
         # Iterative deepening
+        previous_score = None
+
         for depth in range(1, max_depth + 1):
             if time.time() - start_time > time_for_move:
                 break
 
-            score, move = self.minimax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
+            if previous_score is None:
+                alpha = float('-inf')
+                beta = float('inf')
+            else:
+                window = 50  # You can make it tighter if you want
+                alpha = previous_score - window
+                beta = previous_score + window
+
+            score, move = self.minimax(board, depth, alpha, beta, 1 if board.turn else -1, 0)
+
+            # If search fails outside window, redo full window search
+            if score <= alpha or score >= beta:
+                score, move = self.minimax(board, depth, float('-inf'), float('inf'), 1 if board.turn else -1, 0)
 
             if move:
                 best_move = move
+                previous_score = score
                 elapsed = time.time() - start_time
                 print(f"Depth {depth} completed in {elapsed:.2f}s: {best_move} with score {score}")
 
-            # Early exit conditions
             if abs(score) > 9000 and depth > 3:  # Mate found
                 break
             if score > 300 and depth > 5 and (time.time() - start_time) > (time_for_move * 0.5):
@@ -555,7 +611,6 @@ class ChessBot:
             best_move = list(board.legal_moves)[0]
 
         return best_move
-
 
     def order_moves(self, board, quiescence=False):
         """Order moves for better alpha-beta pruning efficiency"""
@@ -818,8 +873,9 @@ class ChessBot:
             reduction = 0
 
             if not first_move and depth >= 3 and move_idx >= 3 and not board.is_check():
-                # Only reduce bad-looking moves after a few good ones
                 reduction = 1
+                if depth >= 6 and move_idx >= 6:
+                    reduction = 2
 
             new_depth = depth - 1 - reduction
 

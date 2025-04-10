@@ -128,6 +128,81 @@ class ChessBot:
             -50, -30, -30, -30, -30, -30, -30, -50
         ]
 
+        self.pawn_weights = {
+            'isolated': 15,
+            'doubled': 15,
+            'passed_base': 20,
+            'passed_rank_bonus': 10,
+            'connected_passed': 20,
+            'advancement': 5
+        }
+
+        # King safety weights
+        self.king_safety_weights = {
+            'pawn_shield': 10,
+            'open_file_penalty': 20,
+            'tropism_penalty_base': 10,
+            'tropism_distance_factor': 2
+        }
+
+        # Mobility weights
+        self.mobility_weights = {
+            'knight': 5,
+            'bishop': 5,
+            'rook': 3,
+            'queen': 2,
+            'stuck_penalty': 10
+        }
+
+        # Attack weights
+        self.attack_weights = {
+            'knight_attack': 10,
+            'bishop_attack': 10,
+            'rook_attack': 15,
+            'queen_attack': 20,
+            'check_bonus': 50
+        }
+
+        # Piece coordination weights
+        self.coordination_weights = {
+            'knight_support': 5,
+            'bishop_diagonal': 10,
+            'rook_alignment': 15
+        }
+
+        # Bishop pair bonus and rook pair penalty
+        self.piece_combo_weights = {
+            'bishop_pair': 50,
+            'rook_pair': 10
+        }
+
+        # Phase weights (how to interpolate between middlegame and endgame)
+        self.phase_weights = {
+            'middlegame_factor': 1.0,
+            'endgame_factor': 1.2
+        }
+
+        # Center control weights
+        self.center_control_weight = 5
+
+        # Threat weights
+        self.threat_weights = {
+            'hanging_penalty_factor': 0.5  # Percentage of piece value to penalize
+        }
+
+        # Weights for different evaluation components in final score
+        self.eval_weights = {
+            'material': 1.0,
+            'position': 1.0,
+            'pawn_structure': 0.8,
+            'king_safety': 1.0,
+            'mobility': 0.9,
+            'key_squares': 0.7,
+            'attacks': 0.8,
+            'coordination': 0.7,
+            'threats': 0.8
+        }
+
         self.position_scores = {
             chess.PAWN: self.pawn_table,
             chess.KNIGHT: self.knight_table,
@@ -184,15 +259,15 @@ class ChessBot:
 
         # Bishop pair bonus
         if len(board.pieces(chess.BISHOP, True)) >= 2:
-            score += 50
+            score += self.piece_combo_weights['bishop_pair']
         if len(board.pieces(chess.BISHOP, False)) >= 2:
-            score -= 50
+            score -= self.piece_combo_weights['bishop_pair']
 
         # Rook pair penalty
         if len(board.pieces(chess.ROOK, True)) >= 2:
-            score -= 10
+            score -= self.piece_combo_weights['rook_pair']
         if len(board.pieces(chess.ROOK, False)) >= 2:
-            score += 10
+            score += self.piece_combo_weights['rook_pair']
 
         return score
 
@@ -219,17 +294,17 @@ class ChessBot:
 
                 # Advancement bonus
                 advancement = rank if color else 7 - rank
-                pawn_score += advancement * 5  # Progressive bonus
+                pawn_score += advancement * self.pawn_weights['advancement']
 
                 # Isolated
                 adjacent_files = [file - 1, file + 1]
                 if not any(adj_file in pawn_files for adj_file in adjacent_files if 0 <= adj_file < 8):
-                    pawn_score -= 15
+                    pawn_score -= self.pawn_weights['isolated']
 
                 # Doubled
                 count_on_file = file_counts[file]
                 if count_on_file > 1:
-                    penalty = 15 * (count_on_file - 1)
+                    penalty = self.pawn_weights['doubled'] * (count_on_file - 1)
                     pawn_score -= penalty
 
                 # Passed
@@ -248,7 +323,8 @@ class ChessBot:
                             break
 
                 if is_passed:
-                    passed_bonus = 20 + (rank if color else 7 - rank) * 10
+                    passed_bonus = self.pawn_weights['passed_base'] + (rank if color else 7 - rank) * self.pawn_weights[
+                        'passed_rank_bonus']
                     pawn_score += passed_bonus
 
                     # Connected passed
@@ -258,7 +334,7 @@ class ChessBot:
                         other_file = chess.square_file(other)
                         other_rank = chess.square_rank(other)
                         if abs(other_file - file) == 1 and abs(other_rank - rank) <= 1:
-                            pawn_score += 20
+                            pawn_score += self.pawn_weights['connected_passed']
                             break
 
                 score += pawn_score
@@ -269,7 +345,7 @@ class ChessBot:
                 black_score += score
 
         total = white_score - black_score
-        return total
+        return total * self.eval_weights['pawn_structure']
 
     def evaluate_king_safety(self, board):
         score = 0
@@ -293,14 +369,14 @@ class ChessBot:
                     shield_square = chess.square(file, shield_rank)
                     piece = board.piece_at(shield_square)
                     if piece and piece.piece_type == chess.PAWN and piece.color == color:
-                        shield_score += 10
+                        shield_score += self.king_safety_weights['pawn_shield']
 
                 has_friendly_pawn = any(
                     board.piece_at(chess.square(file, r)) == chess.Piece(chess.PAWN, color)
                     for r in range(8)
                 )
                 if not has_friendly_pawn:
-                    open_file_penalty += 20
+                    open_file_penalty += self.king_safety_weights['open_file_penalty']
 
             capped_shield = min(shield_score, 30)
             partial = capped_shield - open_file_penalty
@@ -312,12 +388,13 @@ class ChessBot:
                 for sq in board.pieces(piece_type, enemy_color):
                     dist = chess.square_distance(king_square, sq)
                     if dist <= 3:
-                        penalty = (10 - 2 * dist)
+                        penalty = (self.king_safety_weights['tropism_penalty_base'] -
+                                   self.king_safety_weights['tropism_distance_factor'] * dist)
                         tropism_penalty += penalty
 
             score -= tropism_penalty * multiplier
 
-        return score
+        return score * self.eval_weights['king_safety']
 
     def evaluate_threats(self, board):
         score = 0
@@ -336,7 +413,8 @@ class ChessBot:
                 if attackers and not defenders:
                     piece = board.piece_at(sq)
                     if piece:
-                        score -= mult * (self.get_piece_value(piece) // 2)  # Penalize hanging
+                        score -= mult * int(self.get_piece_value(piece) * self.threat_weights['hanging_penalty_factor'])
+
 
         return score
 
@@ -351,7 +429,7 @@ class ChessBot:
                         if move.from_square == sq:
                             mobility += 1
                     if mobility <= 2:
-                        score -= mult * 10  # Penalize stuck pieces
+                        score -= mult * self.mobility_weights['stuck_penalty']
                     else:
                         score += mult * mobility  # Reward active pieces
 
@@ -366,12 +444,11 @@ class ChessBot:
         if board.is_game_over():
             if board.is_checkmate():
                 return -10000 if board.turn else 10000
-
             return 0  # Draw
 
         phase = get_game_phase(board)
-        material = self.evaluate_material(board)
-        position = self.evaluate_piece_position(board)
+        material = self.evaluate_material(board) * self.eval_weights['material']
+        position = self.evaluate_piece_position(board) * self.eval_weights['position']
 
         if phase < 64:
             # Opening / Early Middlegame
@@ -417,16 +494,15 @@ class ChessBot:
                 coordination
         )
 
-
         self.eval_cache[board_hash] = score
         return score
 
     def evaluate_mobility(self, board):
         weights = {
-            chess.KNIGHT: 5,
-            chess.BISHOP: 5,
-            chess.ROOK: 3,
-            chess.QUEEN: 2
+            chess.KNIGHT: self.mobility_weights['knight'],
+            chess.BISHOP: self.mobility_weights['bishop'],
+            chess.ROOK: self.mobility_weights['rook'],
+            chess.QUEEN: self.mobility_weights['queen']
         }
 
         total_score = 0
@@ -464,10 +540,10 @@ class ChessBot:
             # Count attackers and their weight
             for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
                 attack_weight = {
-                    chess.KNIGHT: 10,
-                    chess.BISHOP: 10,
-                    chess.ROOK: 15,
-                    chess.QUEEN: 20
+                    chess.KNIGHT: self.attack_weights['knight_attack'],
+                    chess.BISHOP: self.attack_weights['bishop_attack'],
+                    chess.ROOK: self.attack_weights['rook_attack'],
+                    chess.QUEEN: self.attack_weights['queen_attack']
                 }
 
                 for square in board.pieces(piece_type, color):
@@ -486,7 +562,7 @@ class ChessBot:
             temp_board = board.copy()
             temp_board.turn = color
             if temp_board.is_check():
-                attack_score += 50
+                attack_score += self.attack_weights['check_bonus']
 
             score += attack_score * mult
 
@@ -504,7 +580,7 @@ class ChessBot:
             for i, sq1 in enumerate(knight_squares):
                 for sq2 in knight_squares[i + 1:]:
                     if chess.square_distance(sq1, sq2) <= 2:
-                        coordination_score += 5
+                        coordination_score += self.coordination_weights['knight_support']
 
             # Bishops on same diagonal or adjacent diagonals
             bishop_squares = list(board.pieces(chess.BISHOP, color))
@@ -514,7 +590,7 @@ class ChessBot:
                             chess.square_rank(sq2) + chess.square_file(sq2) or
                             chess.square_rank(sq1) - chess.square_file(sq1) ==
                             chess.square_rank(sq2) - chess.square_file(sq2)):
-                        coordination_score += 10
+                        coordination_score += self.coordination_weights['bishop_diagonal']
 
             # Rooks on same file or rank
             rook_squares = list(board.pieces(chess.ROOK, color))
@@ -522,7 +598,7 @@ class ChessBot:
                 for sq2 in rook_squares[i + 1:]:
                     if (chess.square_file(sq1) == chess.square_file(sq2) or
                             chess.square_rank(sq1) == chess.square_rank(sq2)):
-                        coordination_score += 15
+                        coordination_score += self.coordination_weights['rook_alignment']
 
             score += coordination_score * mult
 
@@ -535,8 +611,8 @@ class ChessBot:
         for square in key_squares:
             white_attackers = board.attackers(chess.WHITE, square)
             black_attackers = board.attackers(chess.BLACK, square)
-            score += 5 * len(white_attackers)
-            score -= 5 * len(black_attackers)
+            score += self.center_control_weight * len(white_attackers)
+            score -= self.center_control_weight * len(black_attackers)
 
         return score
 

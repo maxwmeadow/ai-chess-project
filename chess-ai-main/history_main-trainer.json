@@ -1,0 +1,223 @@
+[
+    {
+        "iteration": 1,
+        "timestamp": 1744286658.2018957,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 2,
+        "timestamp": 1744287681.4325836,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 3,
+            "draws": 2,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.6,
+            "draw_rate": 0.4
+        }
+    },
+    {
+        "iteration": 3,
+        "timestamp": 1744288646.0561194,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 1,
+            "bot2_wins": 1,
+            "draws": 3,
+            "bot1_win_rate": 0.2,
+            "bot2_win_rate": 0.2,
+            "draw_rate": 0.6
+        }
+    },
+    {
+        "iteration": 4,
+        "timestamp": 1744290225.7090747,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 5,
+        "timestamp": 1744291381.7771883,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 1,
+            "bot2_wins": 1,
+            "draws": 3,
+            "bot1_win_rate": 0.2,
+            "bot2_win_rate": 0.2,
+            "draw_rate": 0.6
+        }
+    },
+    {
+        "iteration": 6,
+        "timestamp": 1744292369.2893903,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 2,
+            "bot2_wins": 2,
+            "draws": 1,
+            "bot1_win_rate": 0.4,
+            "bot2_win_rate": 0.4,
+            "draw_rate": 0.2
+        }
+    },
+    {
+        "iteration": 7,
+        "timestamp": 1744293832.9592361,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 1,
+            "draws": 4,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.2,
+            "draw_rate": 0.8
+        }
+    },
+    {
+        "iteration": 8,
+        "timestamp": 1744295282.9133258,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 9,
+        "timestamp": 1744296616.357685,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 10,
+        "timestamp": 1744298174.7888112,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 1,
+            "bot2_wins": 0,
+            "draws": 4,
+            "bot1_win_rate": 0.2,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 0.8
+        }
+    },
+    {
+        "iteration": 11,
+        "timestamp": 1744299563.2476246,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 12,
+        "timestamp": 1744300942.4505756,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 13,
+        "timestamp": 1744302421.3567207,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 14,
+        "timestamp": 1744303751.8920767,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 15,
+        "timestamp": 1744305330.7212374,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 16,
+        "timestamp": 1744306523.0491946,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 0,
+            "bot2_wins": 0,
+            "draws": 5,
+            "bot1_win_rate": 0.0,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 1.0
+        }
+    },
+    {
+        "iteration": 17,
+        "timestamp": 1744307993.2149992,
+        "trainer_id": "main-trainer",
+        "metrics": {
+            "bot1_wins": 1,
+            "bot2_wins": 0,
+            "draws": 4,
+            "bot1_win_rate": 0.2,
+            "bot2_win_rate": 0.0,
+            "draw_rate": 0.8
+        }
+    }
+]

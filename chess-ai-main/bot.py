@@ -26,7 +26,6 @@ def get_game_phase(board):
 def interpolate(mg_score, eg_score, phase):
     return ((mg_score * phase) + (eg_score * (256 - phase))) // 256
 
-
 class ChessBot:
     def __init__(self):
         # Initialize the same resources as before
@@ -211,6 +210,8 @@ class ChessBot:
             chess.QUEEN: self.queen_table,
             chess.KING: self.king_table_mg
         }
+
+        self.try_load_best_bot()
 
     def evaluate_piece_position(self, board):
         score_mg = 0
@@ -623,7 +624,7 @@ class ChessBot:
     def get_move(self, board: ChessBoard):
         """Main method to select the best move."""
         start_time = time.time()
-        time_limit = 1
+        time_limit = 2
         time_for_move = min(time_limit * 0.9, time_limit - 0.1)
 
         if isinstance(board, ChessBoard):
@@ -1084,3 +1085,11 @@ class ChessBot:
 
         # Threshold based on piece values - loss of knight or more is significant
         return eval_drop > 300  # Consider bishop/knight value as threshold for blunder
+
+    def try_load_best_bot(self, filename="best_bot.json"):
+        try:
+            from trainer import load_bot_from_json
+            load_bot_from_json(self, filename)
+            print("[INFO] Loaded best bot from", filename)
+        except Exception as e:
+            print(f"[WARNING] Could not load {filename}: {e}")

@@ -428,14 +428,14 @@ class ChessBot:
 
         return score
 
-    def evaluate_piece_activity(self, board):
+    def evaluate_piece_activity(self, board, legal_moves):
         score = 0
         for color in [True, False]:
             mult = 1 if color else -1
             for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
                 for sq in board.pieces(piece_type, color):
                     mobility = 0
-                    for move in board.legal_moves:
+                    for move in legal_moves:
                         if move.from_square == sq:
                             mobility += 1
                     if mobility <= 2:
@@ -457,6 +457,9 @@ class ChessBot:
             return 0  # Draw
 
         phase = get_game_phase(board)
+
+        legal_moves = list(board.legal_moves)
+
         material = self.evaluate_material(board) * self.eval_weights['material']
         position = self.evaluate_piece_position(board) * self.eval_weights['position']
 
@@ -467,29 +470,29 @@ class ChessBot:
             # Opening / Early Middlegame
             pawn_structure = 0
             king_safety = self.evaluate_king_safety(board)
-            mobility = self.evaluate_mobility(board) * 0.7
+            mobility = self.evaluate_mobility(board, legal_moves) * 0.7
             key_squares = self.evaluate_key_square_control(board) * 1.5
             attack_score = 0
             coordination = self.evaluate_piece_coordination(board)
             threat_score = self.evaluate_threats(board)
-            activity_score = self.evaluate_piece_activity(board)
+            activity_score = self.evaluate_piece_activity(board, legal_moves)
             development_score *= 1.8
         elif phase < 128:
             # Middlegame / Early Endgame
             pawn_structure = self.evaluate_pawn_structure(board)
             king_safety = self.evaluate_king_safety(board)
-            mobility = self.evaluate_mobility(board)
+            mobility = self.evaluate_mobility(board, legal_moves)
             key_squares = self.evaluate_key_square_control(board)
-            attack_score = self.evaluate_attacks(board)
+            attack_score = self.evaluate_attacks(board, legal_moves)
             coordination = self.evaluate_piece_coordination(board)
             threat_score = self.evaluate_threats(board)
-            activity_score = self.evaluate_piece_activity(board)
+            activity_score = self.evaluate_piece_activity(board, legal_moves)
             development_score *= 0.6
         else:
             # True Endgame
             pawn_structure = self.evaluate_pawn_structure(board)
             king_safety = 0  # King activity matters more than "safety" now
-            mobility = self.evaluate_mobility(board)
+            mobility = self.evaluate_mobility(board, legal_moves)
             key_squares = self.evaluate_key_square_control(board)
             attack_score = 0  # Attacks don't matter much when few pieces left
             coordination = self.evaluate_piece_coordination(board)
@@ -515,7 +518,7 @@ class ChessBot:
         self.eval_cache[board_hash] = score
         return score
 
-    def evaluate_mobility(self, board):
+    def evaluate_mobility(self, board, legal_moves):
         weights = {
             chess.KNIGHT: self.mobility_weights['knight'],
             chess.BISHOP: self.mobility_weights['bishop'],
@@ -533,7 +536,7 @@ class ChessBot:
                 for square in board.pieces(piece_type, color):
                     # Get all legal moves for this piece
                     mobility_count = 0
-                    for move in board.legal_moves:
+                    for move in legal_moves:
                         if move.from_square == square:
                             mobility_count += 1
 
@@ -543,48 +546,47 @@ class ChessBot:
 
         return total_score
 
-    def evaluate_attacks(self, board):
+    def evaluate_attacks(self, board, legal_moves):
         score = 0
 
-        for color in [True, False]:
-            mult = 1 if color else -1
-            enemy_color = not color
-            enemy_king_square = board.king(enemy_color)
-            if enemy_king_square is None:
+        # Precompute enemy king square
+        enemy_king_square = board.king(not board.turn)
+        if enemy_king_square is None:
+            return 0
+
+        # Precompute king vicinity
+        king_vicinity = [
+            s for s in chess.SQUARES
+            if chess.square_distance(s, enemy_king_square) <= 2
+        ]
+
+        # Precompute attack weights once
+        attack_weight = {
+            chess.KNIGHT: self.attack_weights['knight_attack'],
+            chess.BISHOP: self.attack_weights['bishop_attack'],
+            chess.ROOK: self.attack_weights['rook_attack'],
+            chess.QUEEN: self.attack_weights['queen_attack']
+        }
+
+        # Count how many attacks on king vicinity
+        attack_score = 0
+        for move in legal_moves:
+            from_piece = board.piece_at(move.from_square)
+            if from_piece is None:
                 continue
 
-            attack_score = 0
+            # Only consider attacking pieces (KNIGHT, BISHOP, ROOK, QUEEN)
+            if from_piece.piece_type not in attack_weight:
+                continue
 
-            # Count attackers and their weight
-            for piece_type in [chess.KNIGHT, chess.BISHOP, chess.ROOK, chess.QUEEN]:
-                attack_weight = {
-                    chess.KNIGHT: self.attack_weights['knight_attack'],
-                    chess.BISHOP: self.attack_weights['bishop_attack'],
-                    chess.ROOK: self.attack_weights['rook_attack'],
-                    chess.QUEEN: self.attack_weights['queen_attack']
-                }
+            if move.to_square in king_vicinity:
+                attack_score += attack_weight[from_piece.piece_type]
 
-                for square in board.pieces(piece_type, color):
-                    # Check if this piece is attacking the king's vicinity
-                    king_vicinity = [
-                        s for s in chess.SQUARES
-                        if chess.square_distance(s, enemy_king_square) <= 2
-                    ]
+        # Bonus if king is directly in check
+        if board.is_check():
+            attack_score += self.attack_weights['check_bonus']
 
-                    for vicinity_square in king_vicinity:
-                        if board.is_attacked_by(color, vicinity_square):
-                            attack_score += attack_weight[piece_type]
-                            break
-
-            # Check if king is in check
-            temp_board = board.copy()
-            temp_board.turn = color
-            if temp_board.is_check():
-                attack_score += self.attack_weights['check_bonus']
-
-            score += attack_score * mult
-
-        return score
+        return attack_score
 
     def evaluate_piece_coordination(self, board):
         score = 0
@@ -778,16 +780,16 @@ class ChessBot:
             print("Found mate in 1!")
             return mate_move
 
-        # Try book moves first
-        book_move = self.opening_book.get_move(board)
-        if book_move and book_move in board.legal_moves:
-            print(f"[DEBUG] Book move played: {book_move}")
-            return book_move
-
-        polyglot_move = self.polyglot_book.get_move(board)
-        if polyglot_move and polyglot_move in board.legal_moves:
-            print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
-            return polyglot_move
+        # # Try book moves first
+        # book_move = self.opening_book.get_move(board)
+        # if book_move and book_move in board.legal_moves:
+        #     print(f"[DEBUG] Book move played: {book_move}")
+        #     return book_move
+        #
+        # polyglot_move = self.polyglot_book.get_move(board)
+        # if polyglot_move and polyglot_move in board.legal_moves:
+        #     print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
+        #     return polyglot_move
 
         self.manage_transposition_table()
 
@@ -942,7 +944,7 @@ class ChessBot:
             return 0
         return self.piece_values.get(piece.piece_type, 0)
 
-    def quiescence(self, board, alpha, beta, color, max_depth=3, current_depth=0):
+    def quiescence(self, board, alpha, beta, color, legal_moves=None,  max_depth=3, current_depth=0):
         """Simplified quiescence search."""
         stand_pat = self.evaluate_position(board) * color
 
@@ -954,12 +956,16 @@ class ChessBot:
         if current_depth >= max_depth:
             return stand_pat
 
-        captures = [move for move in board.legal_moves if board.is_capture(move)]
+        if legal_moves is None:
+            legal_moves = list(board.legal_moves)
+
+        captures = [move for move in legal_moves if board.is_capture(move)]
         captures = self.order_captures(board, captures)
 
         for move in captures:
             board.push(move)
-            score = -self.quiescence(board, -beta, -alpha, -color, max_depth, current_depth + 1)
+            new_legal_moves = list(board.legal_moves)
+            score = -self.quiescence(board, -beta, -alpha, -color, legal_moves=new_legal_moves, max_depth=max_depth, current_depth=current_depth + 1)
             board.pop()
 
             if score >= beta:
@@ -1064,7 +1070,8 @@ class ChessBot:
                     return entry_score * color, entry_move
 
         if depth == 0:
-            return self.quiescence(board, alpha, beta, color), None
+            legal_moves = list(board.legal_moves)
+            return self.quiescence(board, alpha, beta, color, legal_moves=legal_moves), None
 
         # Null move pruning with more conditions
         if depth >= 3 and not board.is_check() and not self.is_endgame(board):

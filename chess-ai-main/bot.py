@@ -6,6 +6,7 @@ import time
 from board import ChessBoard
 from opening_book import OpeningBook, PolyglotBook, create_simple_opening_book
 from mate import MateSolver
+from pgn_reader import PGNOpeningBook
 
 def get_game_phase(board):
     piece_values = {
@@ -29,9 +30,18 @@ def interpolate(mg_score, eg_score, phase):
 class ChessBot:
     def __init__(self):
         # Initialize the same resources as before
-        self.opening_book = OpeningBook(create_simple_opening_book(), max_book_depth=8)
         self.polyglot_book = PolyglotBook("books/gm2600.bin")
+        self.pgn_book = PGNOpeningBook(
+            pgn_path="books/lichess_elite_2025-02.pgn",
+            max_moves=15,
+            min_frequency=2,
+            max_positions=50000,
+            cache_file="lichess_elite_2600.openings",
+            min_elo=2600
+        )
+
         self.mate_solver = MateSolver(self)
+        self.pgn_book.print_stats()
 
         self.transposition_table = {}
         self.transposition_table_max_size = 1000000
@@ -780,16 +790,16 @@ class ChessBot:
             print("Found mate in 1!")
             return mate_move
 
-        # # Try book moves first
-        # book_move = self.opening_book.get_move(board)
-        # if book_move and book_move in board.legal_moves:
-        #     print(f"[DEBUG] Book move played: {book_move}")
-        #     return book_move
-        #
-        # polyglot_move = self.polyglot_book.get_move(board)
-        # if polyglot_move and polyglot_move in board.legal_moves:
-        #     print(f"[DEBUG] Book move played (polyglot): {polyglot_move}")
-        #     return polyglot_move
+        # Try PGN book first
+        pgn_move = self.pgn_book.get_move(board)
+        if pgn_move and pgn_move in board.legal_moves:
+            print(f"[DEBUG] PGN book move played: {pgn_move}")
+            return pgn_move
+
+        polyglot_move = self.polyglot_book.get_move(board)
+        if polyglot_move and polyglot_move in board.legal_moves:
+            print(f"[DEBUG] Polyglot book move played: {polyglot_move}")
+            return polyglot_move
 
         self.manage_transposition_table()
 

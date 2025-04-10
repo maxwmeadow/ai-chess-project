@@ -136,7 +136,6 @@ class ChessGame:
             # Keep window open until closed
             while running:
                 running = self.process_events()
-                pygame.time.wait(100)
 
         pygame.quit()
 

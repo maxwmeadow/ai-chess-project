@@ -5,7 +5,7 @@ import time
 
 from board import ChessBoard
 from opening_book import OpeningBook, PolyglotBook, create_simple_opening_book
-
+from mate import MateSolver
 
 def get_game_phase(board):
     piece_values = {
@@ -31,6 +31,7 @@ class ChessBot:
         # Initialize the same resources as before
         self.opening_book = OpeningBook(create_simple_opening_book(), max_book_depth=8)
         self.polyglot_book = PolyglotBook("books/gm2600.bin")
+        self.mate_solver = MateSolver(self)
 
         self.transposition_table = {}
         self.transposition_table_max_size = 1000000
@@ -202,6 +203,9 @@ class ChessBot:
             'threats': 0.8
         }
 
+        self.opening_pawn_center_bonus = 20
+        self.opening_pawn_semi_center_bonus = 10
+
         self.position_scores = {
             chess.PAWN: self.pawn_table,
             chess.KNIGHT: self.knight_table,
@@ -211,14 +215,18 @@ class ChessBot:
             chess.KING: self.king_table_mg
         }
 
+        self.opening_pawn_table = self.modify_pawn_table_for_opening()
         self.try_load_best_bot()
 
     def evaluate_piece_position(self, board):
         score_mg = 0
         score_eg = 0
 
+        phase = get_game_phase(board)
+        pawn_table = self.opening_pawn_table if phase > 128 else self.pawn_table
+
         tables_mg = {
-            chess.PAWN: self.pawn_table,
+            chess.PAWN: pawn_table,
             chess.KNIGHT: self.knight_table,
             chess.BISHOP: self.bishop_table,
             chess.ROOK: self.rook_table,
@@ -228,6 +236,7 @@ class ChessBot:
 
         tables_eg = dict(tables_mg)
         tables_eg[chess.KING] = self.king_table_eg
+        tables_eg[chess.PAWN] = self.pawn_table
 
         for color in [True, False]:
             mult = 1 if color else -1
@@ -451,17 +460,20 @@ class ChessBot:
         material = self.evaluate_material(board) * self.eval_weights['material']
         position = self.evaluate_piece_position(board) * self.eval_weights['position']
 
+        development_score = self.evaluate_development(board)
+        repetition_penalty = self.detect_repetitive_moves(board)
+
         if phase < 64:
             # Opening / Early Middlegame
             pawn_structure = 0
             king_safety = self.evaluate_king_safety(board)
-            mobility = self.evaluate_mobility(board)
-            key_squares = self.evaluate_key_square_control(board)
-            attack_score = self.evaluate_attacks(board)
+            mobility = self.evaluate_mobility(board) * 0.7
+            key_squares = self.evaluate_key_square_control(board) * 1.5
+            attack_score = 0
             coordination = self.evaluate_piece_coordination(board)
             threat_score = self.evaluate_threats(board)
             activity_score = self.evaluate_piece_activity(board)
-
+            development_score *= 1.8
         elif phase < 128:
             # Middlegame / Early Endgame
             pawn_structure = self.evaluate_pawn_structure(board)
@@ -472,7 +484,7 @@ class ChessBot:
             coordination = self.evaluate_piece_coordination(board)
             threat_score = self.evaluate_threats(board)
             activity_score = self.evaluate_piece_activity(board)
-
+            development_score *= 0.6
         else:
             # True Endgame
             pawn_structure = self.evaluate_pawn_structure(board)
@@ -483,6 +495,7 @@ class ChessBot:
             coordination = self.evaluate_piece_coordination(board)
             threat_score = self.evaluate_threats(board)
             activity_score = 0
+            development_score = 0
 
         score = (
                 material +
@@ -492,7 +505,11 @@ class ChessBot:
                 mobility +
                 key_squares +
                 attack_score +
-                coordination
+                coordination +
+                threat_score +
+                activity_score +
+                development_score +
+                repetition_penalty
         )
 
         self.eval_cache[board_hash] = score
@@ -617,6 +634,130 @@ class ChessBot:
 
         return score
 
+    def evaluate_development(self, board):
+        """Evaluate piece development specifically for the opening phase"""
+        score = 0
+        phase = get_game_phase(board)
+
+        # Only heavily weight development in the opening phase
+        if phase > 128:  # If we're past early middlegame
+            return 0
+
+        # Development weight decreases as the game progresses
+        dev_weight = max(0, (256 - phase) / 256)
+
+        for color in [True, False]:
+            mult = 1 if color else -1
+            home_rank = 0 if color else 7
+
+            # Penalize undeveloped minor pieces
+            for piece_type in [chess.KNIGHT, chess.BISHOP]:
+                for square in board.pieces(piece_type, color):
+                    rank = chess.square_rank(square)
+                    if rank == home_rank:
+                        # Penalize undeveloped minor pieces
+                        score -= mult * 30
+                    else:
+                        # Reward developed minor pieces
+                        score += mult * 20
+
+                        # Extra reward for centralized minor pieces
+                        file = chess.square_file(square)
+                        if 2 <= file <= 5 and 2 <= rank <= 5:
+                            score += mult * 15
+
+            # Queen development - penalize early queen development but reward later
+            for square in board.pieces(chess.QUEEN, color):
+                rank = chess.square_rank(square)
+                moves_made = len(board.move_stack) // 2  # approximate number of moves per side
+
+                if rank != home_rank:
+                    if moves_made < 5:  # Too early for queen development
+                        score -= mult * 30
+                    elif moves_made < 10:  # Acceptable queen development
+                        score += mult * 10
+
+            # Castling status and king safety in opening
+            if not board.has_castling_rights(color):
+                if board.has_queenside_castling_rights(color) or board.has_kingside_castling_rights(color):
+                    # Still has castling rights but hasn't castled
+                    pass
+                else:
+                    # Has lost castling rights without castling - usually bad in opening
+                    moves_made = len(board.move_stack) // 2
+                    if moves_made < 15:
+                        score -= mult * 40
+
+            # Center pawn control
+            center_pawns = 0
+            for pawn_square in board.pieces(chess.PAWN, color):
+                file = chess.square_file(pawn_square)
+                rank = chess.square_rank(pawn_square)
+
+                # Center pawns (d and e files)
+                if file in [3, 4]:
+                    center_pawns += 1
+
+                    # Reward advanced center pawns more
+                    advance = rank - home_rank
+                    if color:  # White pawns move up
+                        score += mult * abs(advance) * 10
+                    else:  # Black pawns move down
+                        score += mult * abs(advance - 7) * 10
+
+            # Penalize if no center pawns have moved at all
+            if center_pawns == 0:
+                score -= mult * 25
+
+        return score * dev_weight  # Scale by development weight
+
+    def detect_repetitive_moves(self, board):
+        """Detect and penalize repetitive moves, especially with major pieces"""
+        if len(board.move_stack) < 6:
+            return 0
+
+        score = 0
+        phase = get_game_phase(board)
+
+        # We only care about repetition in opening/early middlegame
+        if phase > 150:
+            return 0
+
+        # Look at the last few moves for each side
+        last_moves = board.move_stack[-6:]
+        piece_movement_counts = {}
+
+        for move in last_moves:
+            piece = board.piece_at(move.to_square)
+            if not piece:
+                continue
+
+            piece_key = (piece.piece_type, piece.color)
+            if piece_key not in piece_movement_counts:
+                piece_movement_counts[piece_key] = []
+
+            piece_movement_counts[piece_key].append((move.from_square, move.to_square))
+
+        # Check for rook or queen shuffling (back and forth)
+        for piece_key, moves in piece_movement_counts.items():
+            piece_type, color = piece_key
+
+            if piece_type in [chess.ROOK, chess.QUEEN]:
+                # Check if piece is moving back and forth between the same squares
+                if len(moves) >= 2:
+                    squares = set()
+                    for move in moves:
+                        squares.add(move[0])
+                        squares.add(move[1])
+
+                    # If a piece only visited 2 squares in multiple moves, it's shuffling
+                    if len(squares) <= 2 and len(moves) >= 2:
+                        mult = 1 if color == board.turn else -1
+                        penalty = 50 * (1 - phase / 256)  # Penalty reduces as game progresses
+                        score -= mult * penalty
+
+        return score
+
     def minimax(self, board, depth, alpha, beta, maximizing_player, ply=0):
         """Legacy minimax implementation - use PVS instead for better performance"""
         return self.pvs(board, depth, alpha, beta, maximizing_player, ply)
@@ -624,11 +765,13 @@ class ChessBot:
     def get_move(self, board: ChessBoard):
         """Main method to select the best move."""
         start_time = time.time()
-        time_limit = 2
+        time_limit = 5
         time_for_move = min(time_limit * 0.9, time_limit - 0.1)
 
         if isinstance(board, ChessBoard):
             board = board.get_board_state()
+
+        self.mate_solver.start(board)
 
         mate_move = self.check_for_immediate_mate(board)
         if mate_move:
@@ -649,12 +792,18 @@ class ChessBot:
         self.manage_transposition_table()
 
         best_move = None
-        max_depth = 5
+        max_depth = 15
 
         # Iterative deepening
         previous_score = None
 
         for depth in range(1, max_depth + 1):
+            mate_move = self.mate_solver.get_mate_move()
+            if mate_move:
+                print(f"Mate solver found a winning sequence!")
+                self.mate_solver.stop()
+                return mate_move
+
             if time.time() - start_time > time_for_move:
                 break
 
@@ -683,10 +832,17 @@ class ChessBot:
             if score > 300 and depth > 5 and (time.time() - start_time) > (time_for_move * 0.5):
                 break
 
+        mate_move = self.mate_solver.get_mate_move()
+        if mate_move:
+            print(f"Mate solver found a winning sequence!")
+            self.mate_solver.stop()
+            return mate_move
+
         # Fallback if no move found
         if not best_move and list(board.legal_moves):
             best_move = list(board.legal_moves)[0]
 
+        self.mate_solver.stop()
         return best_move
 
     def order_moves(self, board, quiescence=False):
@@ -1093,3 +1249,21 @@ class ChessBot:
             print("[INFO] Loaded best bot from", filename)
         except Exception as e:
             print(f"[WARNING] Could not load {filename}: {e}")
+
+    def modify_pawn_table_for_opening(self):
+        """Create a modified pawn table that rewards center pawn advances in opening"""
+        # Make a copy of the original pawn table
+        opening_pawn_table = list(self.pawn_table)
+
+        # Increase the value of center pawn advances
+        # d4, e4, d5, e5 (in internal 0-63 square indices)
+        center_squares = [chess.D4, chess.E4, chess.D5, chess.E5]
+        for square in center_squares:
+            opening_pawn_table[square] += self.opening_pawn_center_bonus
+
+        # Also slightly increase the value of c4, f4, c5, f5
+        semi_center_squares = [chess.C4, chess.F4, chess.C5, chess.F5]
+        for square in semi_center_squares:
+            opening_pawn_table[square] += self.opening_pawn_semi_center_bonus
+
+        return opening_pawn_table

@@ -8,7 +8,7 @@ import cairosvg
 import io
 from PIL import Image
 
-IS_BOT = True  # Set to False for human vs bot, True for bot vs bot
+IS_BOT = False  # Set to False for human vs bot, True for bot vs bot
 
 
 class ChessGame:

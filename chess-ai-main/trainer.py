@@ -41,7 +41,9 @@ def save_bot_to_json(bot, filename):
         "phase_weights": bot.phase_weights,
         "center_control_weight": bot.center_control_weight,
         "threat_weights": bot.threat_weights,
-        "eval_weights": bot.eval_weights
+        "eval_weights": bot.eval_weights,
+        "opening_pawn_center_bonus": bot.opening_pawn_center_bonus,
+        "opening_pawn_semi_center_bonus": bot.opening_pawn_semi_center_bonus
     }
 
     debug_print(f"Writing to {filename}")
@@ -107,6 +109,12 @@ def load_bot_from_json(bot, filename):
 
     if 'eval_weights' in data:
         bot.eval_weights = data['eval_weights']
+
+    if 'opening_pawn_center_bonus' in data:
+        bot.opening_pawn_center_bonus = data['opening_pawn_center_bonus']
+
+    if 'opening_pawn_semi_center_bonus' in data:
+        bot.opening_pawn_semi_center_bonus = data['opening_pawn_semi_center_bonus']
 
     return True
 
@@ -276,6 +284,9 @@ class SelfPlayTrainer:
         for key in challenger.eval_weights:
             challenger.eval_weights[key] *= random.uniform(0.95, 1.05)
 
+        challenger.opening_pawn_center_bonus *= random.uniform(0.95, 1.05)
+        challenger.opening_pawn_semi_center_bonus *= random.uniform(0.95, 1.05)
+
         debug_print(f"Challenger created successfully")
         return challenger
 
@@ -390,6 +401,8 @@ class SelfPlayTrainer:
         self.best_bot.center_control_weight = challenger.center_control_weight
         self.best_bot.threat_weights = copy.deepcopy(challenger.threat_weights)
         self.best_bot.eval_weights = copy.deepcopy(challenger.eval_weights)
+        self.best_bot.opening_pawn_center_bonus = challenger.opening_pawn_center_bonus
+        self.best_bot.opening_pawn_semi_center_bonus = challenger.opening_pawn_semi_center_bonus
 
 
 def create_bot():
